@@ -1,0 +1,335 @@
+:root {
+  --void: #000000;
+  --panel: #0d1117;
+  --panel-edge: #22303f;
+  --ink: #d7e2ec;
+  --ink-dim: #7f8fa3;
+  --accent: #c9a227;
+  --accent-dim: #6b5714;
+  --floor: #16202b;
+  --floor-edge: #2b3a4c;
+  --wall: #3a2f28;
+  --wall-edge: #57463a;
+  --heard: #3d5a73;
+  --heard-ink: #7fa6c4;
+  --noisy: #d08b4a;
+  --danger: #b8553f;
+
+  --font-ui: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', system-ui, sans-serif;
+  --font-num: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--void);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: #16202b;
+  border: 1px solid var(--panel-edge);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--heard);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+/* ---------- 顶栏 ---------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--panel-edge);
+  flex: 0 0 auto;
+}
+
+.topbar__title {
+  font-size: 16px;
+  letter-spacing: 2px;
+  color: var(--accent);
+  margin: 0;
+  font-weight: 600;
+}
+
+.topbar__stats {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--font-num);
+  font-size: 14px;
+}
+
+.stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.stat__label {
+  color: var(--ink-dim);
+  font-family: var(--font-ui);
+}
+
+.stat--eye {
+  cursor: help;
+}
+
+.log {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 4px 14px;
+  background: #070b10;
+  border-bottom: 1px solid var(--panel-edge);
+  color: var(--ink-dim);
+  font-size: 14px;
+  display: flex;
+  gap: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.log__entry {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.log__entry:last-child {
+  color: var(--ink);
+}
+
+/* ---------- 棋盘 ---------- */
+
+.board {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--void);
+}
+
+.board canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.board__overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.board__banner {
+  padding: 14px 26px;
+  background: rgba(6, 10, 15, 0.92);
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  text-align: center;
+}
+
+.board__banner h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: var(--accent);
+}
+
+.board__banner p {
+  margin: 0;
+  color: var(--ink-dim);
+  font-size: 14px;
+}
+
+.board__notice {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  background: rgba(6, 10, 15, 0.92);
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  color: #e5b6a8;
+  font-size: 14px;
+  pointer-events: none;
+}
+
+/* ---------- 底部控制区 ---------- */
+
+.controls {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px 14px;
+  background: var(--panel);
+  border-top: 1px solid var(--panel-edge);
+}
+
+.controls__row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.dice-tray {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dice {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  border: 1px solid var(--floor-edge);
+  background: var(--floor);
+  color: var(--ink);
+  font-family: var(--font-num);
+  font-size: 19px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 0;
+}
+
+.dice--reserved {
+  opacity: 0.55;
+  border-style: dashed;
+  border-color: var(--accent-dim);
+}
+
+.dice__lock {
+  position: absolute;
+  right: 2px;
+  bottom: 0;
+  font-size: 11px;
+  color: var(--accent);
+}
+
+.dice-tray__label {
+  color: var(--ink-dim);
+  font-size: 14px;
+}
+
+.movement {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--font-num);
+}
+
+.movement__value {
+  font-size: 26px;
+  color: var(--accent);
+}
+
+.actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.actions__hint {
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+
+.legend {
+  color: var(--ink-dim);
+  font-size: 13px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.legend__glyph {
+  font-family: var(--font-num);
+  color: var(--heard-ink);
+}
+
+/* ---------- 手牌占位 ---------- */
+
+.hand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.hand__label {
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+
+.hand__slots {
+  display: flex;
+  gap: 6px;
+}
+
+.hand__slot {
+  width: 74px;
+  height: 44px;
+  border: 1px dashed var(--panel-edge);
+  border-radius: 6px;
+}
+
+@media (max-width: 720px) {
+  .actions {
+    margin-left: 0;
+  }
+
+  .hand__slot {
+    width: 44px;
+  }
+}
