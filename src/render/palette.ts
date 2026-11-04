@@ -1,0 +1,15 @@
+export const PALETTE = {
+  void: '#000000',
+  floorFill: '#16202b',
+  floorStroke: '#2b3a4c',
+  wallFill: '#3a2f28',
+  wallStroke: '#57463a',
+  heardStroke: '#3d5a73',
+  heardGlyph: '#7fa6c4',
+  playerFill: '#e8d9a0',
+  playerRing: '#000000',
+  exitMark: '#c9a227',
+  glyphWall: '#8b6f57',
+  glyphQuiet: '#7fa6c4',
+  glyphNoisy: '#d08b4a',
+} as const;
