@@ -45,15 +45,19 @@ export function App(): JSX.Element {
         <HandArea />
         <div className="legend">
           <span className="legend__item">
-            <span className="legend__glyph">✕</span> 有墙
+            <span className="legend__swatch legend__swatch--wall" /> 粗线 = 墙（贴在地板边缘）
           </span>
           <span className="legend__item">
-            <span className="legend__glyph">·</span> 通路（安静）
+            <span className="legend__swatch legend__swatch--highlight" /> 亮环 = 已知可落脚
           </span>
           <span className="legend__item">
-            <span className="legend__glyph">!</span> 通路（有异响 · 阶段 0 无陷阱）
+            <span className="legend__glyph">▸</span> 箭头 = 可走方向
           </span>
           <span className="legend__item">虚线 = 只探听到、尚未踏足</span>
+          <span className="legend__item">
+            <span className="legend__glyph">·</span> 通路（安静） <span className="legend__glyph">!</span>{' '}
+            通路（有异响 · 阶段 0 无陷阱）
+          </span>
         </div>
       </div>
     </div>

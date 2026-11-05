@@ -8,8 +8,8 @@
   --accent-dim: #6b5714;
   --floor: #16202b;
   --floor-edge: #2b3a4c;
-  --wall: #3a2f28;
-  --wall-edge: #57463a;
+  --wall-line: #8a6a4a;
+  --highlight: #7fd6a3;
   --heard: #3d5a73;
   --heard-ink: #7fa6c4;
   --noisy: #d08b4a;
@@ -296,6 +296,23 @@ button:disabled {
 .legend__glyph {
   font-family: var(--font-num);
   color: var(--heard-ink);
+}
+
+.legend__swatch {
+  display: inline-block;
+  width: 18px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.legend__swatch--wall {
+  background: var(--wall-line);
+}
+
+.legend__swatch--highlight {
+  height: 12px;
+  border: 2px solid var(--highlight);
+  border-radius: 6px;
 }
 
 /* ---------- 手牌占位 ---------- */
