@@ -1,5 +1,4 @@
 import { runBalance, type BalanceReport } from '../src/sim/balance';
-import { SNIFFER, STONEWARDEN, WRAITH, type MonsterDef } from '../src/rules/monsters/content';
 
 const SEEDS = 200;
 
@@ -16,17 +15,12 @@ function line(label: string, r: BalanceReport): string {
   );
 }
 
-function sweep(title: string, def: MonsterDef, count: number): void {
-  console.log(`\n=== ${title} ===`);
-  for (const policy of ['run', 'fight', 'escape'] as const) {
-    console.log(line(`策略 ${policy}`, runBalance(policy, SEEDS, def, count)));
-  }
+console.log('=== 阶段 1 机动性模拟（关卡自带布点 · 200 局）===');
+for (const policy of ['run', 'fight', 'escape'] as const) {
+  console.log(line(`策略 ${policy}`, runBalance(policy, SEEDS, 8)));
 }
 
-sweep('嗅犬 · 1 只', SNIFFER, 1);
-sweep('嗅犬 · 14 只（文档怪物预算）', SNIFFER, 14);
-
-console.log('\n=== 14 只 · 不同怪物（策略 run）===');
-for (const def of [SNIFFER, STONEWARDEN, WRAITH]) {
-  console.log(line(def.name, runBalance('run', SEEDS, def, 14)));
+console.log('\n=== 怪物数量扫描（策略 run）===');
+for (const count of [0, 2, 4, 6, 8, 10, 14]) {
+  console.log(line(`${count} 只`, runBalance('run', SEEDS, count)));
 }
