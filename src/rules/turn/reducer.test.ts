@@ -87,6 +87,7 @@ describe('移动', () => {
       ...state,
       player: { ...state.player, pos: beforeExit },
       dice: diceWith([6, 6, 6]),
+      monsters: [],
     };
     expect(areAdjacent(beforeExit, state.level.exit)).toBe(true);
     const won = reduceGame(rich, { type: 'move', target: state.level.exit });
@@ -127,7 +128,8 @@ describe('回合流转', () => {
 
   it('无路可走时自动结束回合，存在预留骰子时不触发', () => {
     let state = createGame(12);
-    state = { ...state, dice: diceWith([1, 1, 1]) };
+    // 手上有牌时玩家永远有事可做，自动结束不会触发
+    state = { ...state, dice: diceWith([1, 1, 1]), hand: [] };
     const path = findPath(levelAsCellGrid(state.level), state.level.start, state.level.exit)!;
     for (const target of path.slice(1, 4)) {
       state = reduceGame(state, { type: 'move', target });

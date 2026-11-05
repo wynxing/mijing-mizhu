@@ -1,7 +1,11 @@
-import type { Axial } from '../grid/geometry';
+import type { Axial, AxialKey } from '../grid/geometry';
 import type { Level } from '../generation/generator';
 import type { Die } from '../dice/dice';
 import type { FogState } from '../fog/fog';
+import type { ScentState } from '../fog/scent';
+import type { Monster } from '../monsters/brain';
+import type { Buff } from '../buffs/buffs';
+import type { CardDef } from '../cards/content';
 
 export type GameStatus = 'playing' | 'won' | 'lost';
 
@@ -28,7 +32,19 @@ export interface GameState {
   dice: Die[];
   spentPoints: number;
   listenUsed: number;
+  /** 本回合的额外探听次数（探查术）。 */
+  listenBonus: number;
   fog: FogState;
+  /** 气味场：怪物循此移动。 */
+  scent: ScentState;
+  /** 手牌，打出即消耗。 */
+  hand: CardDef[];
+  monsters: Monster[];
+  buffs: Buff[];
+  /** 本回合有没有移动过（静止是甩开追击的关键）。 */
+  movedThisTurn: boolean;
+  /** 连续未移动的回合数。 */
+  stationaryTurns: number;
   log: LogEntry[];
   notice: string | null;
   rngState: number;
@@ -38,6 +54,7 @@ export interface GameState {
 export type GameIntent =
   | { type: 'move'; target: Axial }
   | { type: 'listen' }
+  | { type: 'playCard'; cardId: string; dieId: number; targetKey?: AxialKey }
   | { type: 'reserveDie'; dieId: number }
   | { type: 'unreserveDie'; dieId: number }
   | { type: 'endTurn' }

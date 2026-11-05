@@ -429,7 +429,7 @@ interface Difficulty {
   mazeWidth: number;      // 默认 34
   mazeHeight: number;     // 默认 24
   roomCount: number;      // 默认 7
-  monsterBudget: number;  // 默认 14
+  monsterBudget: number;  // 默认 8（数据见 docs/balance/phase1-mobility.md）
   trapDensity: number;    // 默认 0.06
   guardianTier: number;   // 守卫强度档位
 }
@@ -681,7 +681,8 @@ UI 事件 → dispatch(intent) → store 调 rules 纯函数 → 新 state
 | 玩家 HP | 100 | 统计平均承伤与死亡点 | 若平均承伤 > 60 → HP 偏高或怪物伤害偏高 |
 | 追击脱离静止回合数 | 2 回合 | 统计追击成功率与脱离成功率 | 若脱离率 > 70% → 惩罚过轻 |
 | 特殊地形密度 | 每 80 格 1 个 | 统计玩家踩中率 | 若极少被使用 → 提示不足，增加视觉引导 |
-| 怪物数量 | 14 | 统计单局遭遇次数 | 若 > 25 次 → 遭遇过密，降低密度 |
+| 怪物数量 | 8 | 统计单局遭遇次数 | 若 > 25 次 → 遭遇过密，降低密度 |
+| 威胁强度 | 无下界 | 统计平均承伤 | 若 < 20 → 怪物只是装饰品，要加密度或伤害 |
 | 守卫三阶段复杂度 | 三阶段 | 观察玩家在守卫战失败率 | 若 > 70% 失败 → 减少阶段或降低 AOE 范围 |
 
 ---

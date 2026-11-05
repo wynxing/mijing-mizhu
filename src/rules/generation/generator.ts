@@ -19,6 +19,8 @@ export interface LevelGenParams {
   branchCount: number;
   branchLength: number;
   shortcutCount: number;
+  /** 怪物数量预算：阶段 1 定为 8（见 docs/balance/phase1-mobility.md）。 */
+  monsterBudget: number;
   seed: number;
 }
 
@@ -30,8 +32,14 @@ export const DEFAULT_GEN_PARAMS: LevelGenParams = {
   branchCount: 3,
   branchLength: 4,
   shortcutCount: 2,
+  monsterBudget: 8,
   seed: 1,
 };
+
+export interface MonsterPlacement {
+  defId: string;
+  pos: Axial;
+}
 
 export interface Level {
   width: number;
@@ -43,6 +51,7 @@ export interface Level {
   branches: Axial[][];
   shortcuts: Axial[][];
   traps: Set<AxialKey>;
+  monsters: MonsterPlacement[];
   seed: number;
 }
 
@@ -260,6 +269,42 @@ function pickAxisDir(current: Axial, target: Axial, horizontalFirst: boolean): D
   return horizontal;
 }
 
+/**
+ * 布点：怪物散布在离起点 ≥ 8 格的地面格上（设计文档 §9.1 的安全期）。
+ * 怪物种类按预算分配：嗅犬为主，石卫少量，游魂少量。
+ */
+function placeMonsters(
+  canvas: Canvas,
+  rng: Rng32,
+  start: Axial,
+  budget: number,
+): MonsterPlacement[] {
+  const candidates: Axial[] = [];
+  for (let row = 1; row < canvas.height - 1; row++) {
+    for (let col = 1; col < canvas.width - 1; col++) {
+      const cell = offsetToAxial(col, row);
+      if (!canvas.isFloor(cell)) continue;
+      if (hexDistance(cell, start) < 8) continue;
+      candidates.push(cell);
+    }
+  }
+  for (let i = candidates.length - 1; i > 0; i--) {
+    const j = rng.int(0, i);
+    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+  }
+
+  const mix: string[] = [];
+  for (let i = 0; i < budget; i++) {
+    const ratio = i / Math.max(1, budget);
+    mix.push(ratio < 0.6 ? 'sniffer' : ratio < 0.85 ? 'stonewarden' : 'wraith');
+  }
+
+  return candidates.slice(0, budget).map((pos, index) => ({
+    defId: mix[index],
+    pos,
+  }));
+}
+
 export function generateLevel(params: LevelGenParams): Level {
   const rng = new Rng32(params.seed);
   const canvas = new Canvas(params.width, params.height);
@@ -278,6 +323,7 @@ export function generateLevel(params: LevelGenParams): Level {
     branches,
     shortcuts,
     traps: new Set<AxialKey>(),
+    monsters: placeMonsters(canvas, rng, mainPath[0], params.monsterBudget),
     seed: params.seed,
   };
 

@@ -1,6 +1,6 @@
 import { Rng32 } from '../core/rng';
-import { axialKey, hexDistance, offsetToAxial, type Axial } from '../rules/grid/geometry';
-import { findPath, isWalkable } from '../rules/grid/path';
+import { axialKey, hexDistance, type Axial } from '../rules/grid/geometry';
+import { findPath } from '../rules/grid/path';
 import {
   DEFAULT_GEN_PARAMS,
   generateLevel,
@@ -8,7 +8,7 @@ import {
   type Level,
 } from '../rules/generation/generator';
 import { addScent, createScent, decayScent, type ScentState } from '../rules/fog/scent';
-import { SNIFFER, type MonsterDef } from '../rules/monsters/content';
+import { monsterDef as monsterDefOf } from '../rules/monsters/content';
 import {
   actMonster,
   createMonster,
@@ -75,9 +75,8 @@ const POLICY_OPTIONS: Record<Policy, PolicyOptions> = {
 export function simulateRun(
   seed: number,
   policy: Policy,
-  monsterDef: MonsterDef = SNIFFER,
   maxTurns = 60,
-  monsterCount = 1,
+  monsterCount = 8,
 ): RunResult {
   const rng = new Rng32(seed);
   const level: Level = generateLevel({ ...DEFAULT_GEN_PARAMS, seed });
@@ -98,7 +97,10 @@ export function simulateRun(
   let engagements = 0;
   let kills = 0;
 
-  let monsters: Monster[] = spawnMonsters(level, monsterDef, monsterCount);
+  // 用游戏自己的布点逻辑，模拟结果才对游戏有效
+  let monsters: Monster[] = level.monsters
+    .slice(0, monsterCount)
+    .map((placement) => createMonster(monsterDefOf(placement.defId), placement.pos));
   monsters = monsters.map((m) => rollIntent(m, rng, pos));
 
   while (turn <= maxTurns) {
@@ -222,39 +224,16 @@ export function simulateRun(
   };
 }
 
-/**
- * 怪物散布在迷宫里的地面格上，离起点至少 8 格（设计文档 §9.1 的安全期）。
- * 不是全部堆在主路径上——那会把一局变成连续遭遇战。
- */
-function spawnMonsters(level: Level, def: MonsterDef, count: number): Monster[] {
-  const map = levelAsCellGrid(level);
-  const candidates: Axial[] = [];
-  for (let row = 0; row < level.height; row++) {
-    for (let col = 0; col < level.width; col++) {
-      const cell = offsetToAxial(col, row);
-      if (!isWalkable(map, cell)) continue;
-      if (hexDistance(cell, level.start) < 8) continue;
-      candidates.push(cell);
-    }
-  }
-  // 用关卡种子打乱，保证同种子同布局
-  const rng = new Rng32(level.seed ^ 0x5f3a);
-  for (let i = candidates.length - 1; i > 0; i--) {
-    const j = rng.int(0, i);
-    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-  }
-  return candidates.slice(0, count).map((cell) => createMonster(def, cell));
-}
+
 
 export function runBalance(
   policy: Policy,
   seeds: number,
-  monsterDef: MonsterDef = SNIFFER,
-  monsterCount = 1,
+  monsterCount = 8,
 ): BalanceReport {
   const results: RunResult[] = [];
   for (let seed = 1; seed <= seeds; seed++) {
-    results.push(simulateRun(seed, policy, monsterDef, 60, monsterCount));
+    results.push(simulateRun(seed, policy, 60, monsterCount));
   }
   const avg = (pick: (r: RunResult) => number) =>
     results.reduce((sum, r) => sum + pick(r), 0) / results.length;

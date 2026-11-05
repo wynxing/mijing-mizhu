@@ -3,6 +3,10 @@ import { DEFAULT_GEN_PARAMS, type LevelGenParams } from '../generation/generator
 import { generateValidLevel } from '../generation/validate';
 import { rollDice } from '../dice/dice';
 import { createFog, markVisited } from '../fog/fog';
+import { createScent } from '../fog/scent';
+import { createMonster } from '../monsters/brain';
+import { monsterDef } from '../monsters/content';
+import { STARTING_HAND, cardDef } from '../cards/content';
 import type { GameState } from '../turn/types';
 
 export const PLAYER_MAX_HP = 100;
@@ -11,6 +15,11 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
   const level = generateValidLevel({ ...DEFAULT_GEN_PARAMS, ...params, seed });
   const rng = new Rng32(level.seed);
   const dice = rollDice(rng);
+
+  const monsters = level.monsters.map((placement) =>
+    createMonster(monsterDef(placement.defId), placement.pos),
+  );
+  const hand = STARTING_HAND.map((id) => cardDef(id));
 
   return {
     level,
@@ -21,7 +30,14 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
     dice,
     spentPoints: 0,
     listenUsed: 0,
+    listenBonus: 0,
     fog: markVisited(createFog(), level.start),
+    scent: createScent(),
+    hand,
+    monsters,
+    buffs: [],
+    movedThisTurn: false,
+    stationaryTurns: 0,
     log: [{ text: '你踏入漆黑的迷宫', turn: 1 }],
     notice: null,
     rngState: rng.state,
