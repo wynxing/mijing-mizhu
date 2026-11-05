@@ -39,7 +39,12 @@ export function useKeyboard(): void {
       }
 
       if (event.code === 'Escape') {
-        const reserved = useGameStore.getState().game?.dice.filter((die) => die.reserved) ?? [];
+        const store = useGameStore.getState();
+        if (store.view.selectedCard) {
+          store.selectCard(null);
+          return;
+        }
+        const reserved = store.game?.dice.filter((die) => die.reserved) ?? [];
         for (const die of reserved) dispatch({ type: 'unreserveDie', dieId: die.id });
         return;
       }

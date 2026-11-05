@@ -12,4 +12,11 @@ export const PALETTE = {
   glyphNoisy: '#d08b4a',
   highlight: '#7fd6a3',
   highlightDot: '#d8ffe9',
+  monster: '#6b5a72',
+  monsterAlert: '#c98a3c',
+  monsterChase: '#c2553f',
+  intentMove: '#c9a227',
+  intentAttack: '#e07a5f',
+  intentSearch: '#7fa6c4',
+  intentFrozen: '#8fd0d6',
 } as const;

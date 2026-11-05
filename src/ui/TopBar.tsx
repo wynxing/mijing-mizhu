@@ -3,14 +3,21 @@ import { useGameStore } from '../state/store';
 export function TopBar(): JSX.Element {
   const game = useGameStore((s) => s.game);
   const startGame = useGameStore((s) => s.startGame);
+  const alerted =
+    game?.monsters.filter((monster) => monster.state === 'alert' || monster.state === 'chase')
+      .length ?? 0;
 
   return (
     <header className="topbar">
       <h1 className="topbar__title">迷雾迷径</h1>
       <div className="topbar__stats">
-        <span className="stat stat--eye" title="阶段 0 无怪物" data-testid="eye">
+        <span
+          className="stat stat--eye"
+          title="处于警觉或追击的怪物数量"
+          data-testid="eye"
+        >
           <span className="stat__label">警戒</span>
-          ◉0
+          ◉{alerted}
         </span>
         <span className="stat" data-testid="hp">
           <span className="stat__label">体力</span>

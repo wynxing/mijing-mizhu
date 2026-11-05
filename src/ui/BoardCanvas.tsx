@@ -24,6 +24,9 @@ export function BoardCanvas(): JSX.Element {
   const panBy = useGameStore((s) => s.panBy);
   const setFollow = useGameStore((s) => s.setFollow);
   const centerOnPlayer = useGameStore((s) => s.centerOnPlayer);
+  const selectedCard = useGameStore((s) => s.view.selectedCard);
+  const selectedTarget = useGameStore((s) => s.view.selectedTarget);
+  const selectTarget = useGameStore((s) => s.selectTarget);
 
   const camera = useMemo<Camera>(
     () => (view.follow && game ? { ...view, ...playerCenter(game.player.pos) } : view),
@@ -74,11 +77,11 @@ export function BoardCanvas(): JSX.Element {
     const canvas = canvasRef.current;
     const renderer = rendererRef.current;
     if (!canvas || !renderer || !game) return;
-    const model = buildRenderModel(game);
+    const model = buildRenderModel(game, selectedTarget ?? undefined);
     frameRef.current = { model, camera };
     const rect = canvas.getBoundingClientRect();
     renderer.render(model, camera, { w: rect.width, h: rect.height });
-  }, [game, camera]);
+  }, [game, camera, selectedTarget]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -122,10 +125,21 @@ export function BoardCanvas(): JSX.Element {
 
       const current = useGameStore.getState().game;
       if (!current) return;
+
+      // 选中的卡需要指定目标：点怪物而不是移动
+      const card = current.hand.find((item) => item.uid === selectedCard)?.def ?? null;
+      if (card?.needsTarget) {
+        const monster = current.monsters.find(
+          (item) => item.pos.q === cell.q && item.pos.r === cell.r,
+        );
+        if (monster) selectTarget(`${monster.pos.q},${monster.pos.r}`);
+        return;
+      }
+
       if (!areAdjacent(current.player.pos, cell)) return;
       dispatch({ type: 'move', target: cell });
     },
-    [camera, dispatch],
+    [camera, dispatch, selectedCard, selectTarget],
   );
 
   const handleDoubleClick = useCallback(() => {

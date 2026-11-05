@@ -91,13 +91,22 @@ export class BoardRenderer {
       this.drawArrow(playerScreen, screen, radius);
     }
 
-    // 五、出口与玩家
+    // 五、出口
     const exitCell = model.cells.get(`${model.exit.q},${model.exit.r}`);
     if (exitCell?.appearance.kind === 'floor') {
       const exitScreen = worldToScreen(camera, size, axialToPixel(model.exit, BASE_HEX_SIZE));
       this.drawExit(exitScreen, radius);
     }
 
+    // 六、怪物与意图
+    for (const monster of model.monsters) {
+      if (!monster.visible) continue;
+      const screen = worldToScreen(camera, size, axialToPixel(monster.pos, BASE_HEX_SIZE));
+      this.drawMonster(screen, radius, monster.state, monster.targeted);
+      this.drawIntent(screen, radius, monster.intent);
+    }
+
+    // 七、玩家
     this.drawPlayerMarker(playerScreen, radius);
   }
 
@@ -303,6 +312,59 @@ export class BoardRenderer {
     ctx.strokeStyle = PALETTE.playerRing;
     ctx.lineWidth = 2;
     ctx.stroke();
+  }
+
+  /** 怪物：形状 + 颜色双编码（不依赖单一色相）。 */
+  private drawMonster(
+    center: Point,
+    radius: number,
+    state: 'wander' | 'alert' | 'chase',
+    targeted: boolean,
+  ): void {
+    const ctx = this.ctx;
+    const size = radius * 0.34;
+    ctx.beginPath();
+    ctx.moveTo(center.x, center.y - size);
+    ctx.lineTo(center.x + size, center.y);
+    ctx.lineTo(center.x, center.y + size);
+    ctx.lineTo(center.x - size, center.y);
+    ctx.closePath();
+    ctx.fillStyle =
+      state === 'chase' ? PALETTE.monsterChase : state === 'alert' ? PALETTE.monsterAlert : PALETTE.monster;
+    ctx.fill();
+    ctx.strokeStyle = targeted ? PALETTE.highlight : PALETTE.void;
+    ctx.lineWidth = targeted ? 3 : 1.5;
+    ctx.stroke();
+  }
+
+  /** 意图图标：图标 + 数字，提前告知下一步。 */
+  private drawIntent(
+    center: Point,
+    radius: number,
+    intent: { kind: 'move'; steps: number } | { kind: 'attack'; damage: number } | { kind: 'search' } | { kind: 'frozen' },
+  ): void {
+    const ctx = this.ctx;
+    const glyph =
+      intent.kind === 'move'
+        ? `→${intent.steps}`
+        : intent.kind === 'attack'
+          ? `✕${intent.damage}`
+          : intent.kind === 'search'
+            ? '?'
+            : '≡';
+    const color =
+      intent.kind === 'attack'
+        ? PALETTE.intentAttack
+        : intent.kind === 'move'
+          ? PALETTE.intentMove
+          : intent.kind === 'frozen'
+            ? PALETTE.intentFrozen
+            : PALETTE.intentSearch;
+    ctx.fillStyle = color;
+    ctx.font = `bold ${Math.round(radius * 0.42)}px "SFMono-Regular", Consolas, monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(glyph, center.x, center.y - radius * 0.55);
   }
 
   /** 屏幕坐标 → 格子（取最近中心）。 */

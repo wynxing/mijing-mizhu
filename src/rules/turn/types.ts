@@ -7,6 +7,12 @@ import type { Monster } from '../monsters/brain';
 import type { Buff } from '../buffs/buffs';
 import type { CardDef } from '../cards/content';
 
+/** 手牌实例：同名卡有多张，每张都要有唯一标识。 */
+export interface HandCard {
+  uid: string;
+  def: CardDef;
+}
+
 export type GameStatus = 'playing' | 'won' | 'lost';
 
 /** 阶段 0 只有玩家回合；'resolving' 为阶段 1 的怪物结算预留。 */
@@ -38,7 +44,7 @@ export interface GameState {
   /** 气味场：怪物循此移动。 */
   scent: ScentState;
   /** 手牌，打出即消耗。 */
-  hand: CardDef[];
+  hand: HandCard[];
   monsters: Monster[];
   buffs: Buff[];
   /** 本回合有没有移动过（静止是甩开追击的关键）。 */
@@ -54,7 +60,7 @@ export interface GameState {
 export type GameIntent =
   | { type: 'move'; target: Axial }
   | { type: 'listen' }
-  | { type: 'playCard'; cardId: string; dieId: number; targetKey?: AxialKey }
+  | { type: 'playCard'; cardUid: string; dieId: number; targetKey?: AxialKey }
   | { type: 'reserveDie'; dieId: number }
   | { type: 'unreserveDie'; dieId: number }
   | { type: 'endTurn' }

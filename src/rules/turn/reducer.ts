@@ -66,7 +66,9 @@ export function hasLegalAction(state: GameState): boolean {
   if (state.status !== 'playing') return false;
   if (movementPointsOf(state) >= 1) return true;
   if (state.dice.some((die) => die.reserved)) return true;
-  return state.hand.some((card) => state.dice.some((die) => !die.reserved && die.value >= card.cost));
+  return state.hand.some((card) =>
+    state.dice.some((die) => !die.reserved && die.value >= card.def.cost),
+  );
 }
 
 function monsterAt(state: GameState, cell: Axial): Monster | undefined {
@@ -124,6 +126,7 @@ export function resolveCardTarget(
 export function applyCard(
   state: GameState,
   card: CardDef,
+  cardUid: string,
   dieId: number,
   targetKey?: AxialKey,
 ): { state: GameState; error: string | null } {
@@ -137,7 +140,7 @@ export function applyCard(
 
   let next: GameState = {
     ...state,
-    hand: state.hand.filter((item) => item.id !== card.id),
+    hand: state.hand.filter((item) => item.uid !== cardUid),
     dice: state.dice.map((item) => (item.id === dieId ? { ...item, reserved: true } : item)),
     notice: null,
   };
@@ -460,9 +463,9 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
     }
 
     case 'playCard': {
-      const card = state.hand.find((item) => item.id === intent.cardId);
-      if (!card) return reject(state, '没有这张卡');
-      const result = applyCard(state, card, intent.dieId, intent.targetKey);
+      const held = state.hand.find((item) => item.uid === intent.cardUid);
+      if (!held) return reject(state, '没有这张卡');
+      const result = applyCard(state, held.def, held.uid, intent.dieId, intent.targetKey);
       if (result.error) return reject(state, result.error);
       next = result.state;
       break;

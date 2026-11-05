@@ -19,7 +19,10 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
   const monsters = level.monsters.map((placement) =>
     createMonster(monsterDef(placement.defId), placement.pos),
   );
-  const hand = STARTING_HAND.map((id) => cardDef(id));
+  const hand = STARTING_HAND.map((id, index) => ({
+    uid: `${id}-${index}`,
+    def: cardDef(id),
+  }));
 
   return {
     level,
