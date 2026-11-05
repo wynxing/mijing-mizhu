@@ -1,15 +1,21 @@
 import {
   BASE_HEX_SIZE,
-  PENTAGON_RATIO,
   axialToPixel,
+  hexCorners,
   parseAxialKey,
-  pentagonVertices,
   pixelToAxial,
   type Axial,
+  type Point,
 } from '../rules/grid/geometry';
 import { worldToScreen, type Camera, type ViewportSize } from './camera';
 import { PALETTE } from './palette';
 import type { CellAppearance, RenderModel } from './model';
+
+interface DrawableCell {
+  axial: Axial;
+  screen: Point;
+  appearance: CellAppearance;
+}
 
 export class BoardRenderer {
   private ctx: CanvasRenderingContext2D;
@@ -39,12 +45,13 @@ export class BoardRenderer {
     ctx.fillStyle = PALETTE.void;
     ctx.fillRect(0, 0, size.w, size.h);
 
-    const radius = BASE_HEX_SIZE * camera.zoom * PENTAGON_RATIO;
-    const margin = radius + 8;
+    const radius = BASE_HEX_SIZE * camera.zoom;
+    const margin = radius * 1.6;
 
+    const floors: DrawableCell[] = [];
     for (const [key, cell] of model.cells) {
-      if (cell.appearance.kind === 'unknown') continue;
-
+      const kind = cell.appearance.kind;
+      if (kind === 'unknown' || kind === 'knownWall') continue;
       const axial = parseAxialKey(key);
       const world = axialToPixel(axial, BASE_HEX_SIZE);
       const screen = worldToScreen(camera, size, world);
@@ -56,74 +63,187 @@ export class BoardRenderer {
       ) {
         continue;
       }
-
-      this.drawCell(screen, radius, cell.appearance);
+      floors.push({ axial, screen, appearance: cell.appearance });
     }
 
-    const exitWorld = axialToPixel(model.exit, BASE_HEX_SIZE);
-    const exitScreen = worldToScreen(camera, size, exitWorld);
+    // 一、地板与已探听到的通路
+    for (const cell of floors) {
+      this.drawFloor(cell.screen, radius, cell.appearance);
+    }
+
+    // 二、墙：贴在地板格边缘的粗线 + 内侧渐变阴影
+    for (const cell of floors) {
+      if (cell.appearance.kind !== 'floor') continue;
+      const edges = model.cells.get(`${cell.axial.q},${cell.axial.r}`);
+      if (edges) this.drawWallEdges(cell.screen, radius, edges.wallEdges);
+    }
+
+    // 三、灯光：压在地板与墙之上，但要在高亮之前，否则会冲淡高亮色
+    const playerScreen = worldToScreen(camera, size, axialToPixel(model.player, BASE_HEX_SIZE));
+    this.drawPlayerGlow(playerScreen, radius);
+
+    // 四、可落脚的邻居高亮
+    for (const neighbor of model.standableNeighbors) {
+      const world = axialToPixel(neighbor.cell, BASE_HEX_SIZE);
+      const screen = worldToScreen(camera, size, world);
+      const cell = model.cells.get(`${neighbor.cell.q},${neighbor.cell.r}`);
+      this.drawHighlight(screen, radius, cell?.appearance.kind === 'heardPassage');
+      this.drawArrow(playerScreen, screen, radius);
+    }
+
+    // 五、出口与玩家
     const exitCell = model.cells.get(`${model.exit.q},${model.exit.r}`);
-    if (exitCell && exitCell.appearance.kind !== 'unknown') {
+    if (exitCell?.appearance.kind === 'floor') {
+      const exitScreen = worldToScreen(camera, size, axialToPixel(model.exit, BASE_HEX_SIZE));
       this.drawExit(exitScreen, radius);
     }
 
-    const playerWorld = axialToPixel(model.player, BASE_HEX_SIZE);
-    const playerScreen = worldToScreen(camera, size, playerWorld);
-    this.drawPlayer(playerScreen, radius);
+    this.drawPlayerMarker(playerScreen, radius);
   }
 
-  private drawCell(center: { x: number; y: number }, radius: number, appearance: CellAppearance): void {
+  private drawFloor(center: Point, radius: number, appearance: CellAppearance): void {
     const ctx = this.ctx;
-    const verts = pentagonVertices(center, radius);
+    const corners = hexCorners(center, radius);
 
     ctx.beginPath();
-    ctx.moveTo(verts[0].x, verts[0].y);
-    for (let i = 1; i < verts.length; i++) ctx.lineTo(verts[i].x, verts[i].y);
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
     ctx.closePath();
 
-    switch (appearance.kind) {
-      case 'floor': {
-        ctx.fillStyle = PALETTE.floorFill;
-        ctx.fill();
-        ctx.strokeStyle = PALETTE.floorStroke;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-        break;
+    if (appearance.kind === 'heardPassage') {
+      ctx.strokeStyle = PALETTE.heardStroke;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const noisy = appearance.result === 'passage_noisy';
+      this.drawGlyph(
+        center,
+        radius,
+        noisy ? '!' : '·',
+        noisy ? PALETTE.glyphNoisy : PALETTE.glyphQuiet,
+      );
+      return;
+    }
+
+    ctx.fillStyle = PALETTE.floorFill;
+    ctx.fill();
+    ctx.strokeStyle = PALETTE.floorStroke;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  /** 墙线画在地板格与墙格共享的边上；连续的墙边拼成一条折线。 */
+  private drawWallEdges(center: Point, radius: number, wallEdges: boolean[]): void {
+    const ctx = this.ctx;
+    const corners = hexCorners(center, radius);
+    const isWallEdge = (edge: number) => wallEdges[(7 - edge) % 6];
+    const depth = radius * 0.3;
+
+    for (let edge = 0; edge < 6; edge++) {
+      if (!isWallEdge(edge)) continue;
+      const a = corners[edge];
+      const b = corners[(edge + 1) % 6];
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const dx = center.x - mid.x;
+      const dy = center.y - mid.y;
+      const length = Math.hypot(dx, dy) || 1;
+      const ux = dx / length;
+      const uy = dy / length;
+
+      const gradient = ctx.createLinearGradient(
+        mid.x,
+        mid.y,
+        mid.x + ux * depth,
+        mid.y + uy * depth,
+      );
+      gradient.addColorStop(0, PALETTE.wallShadow);
+      gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.lineTo(b.x + ux * depth, b.y + uy * depth);
+      ctx.lineTo(a.x + ux * depth, a.y + uy * depth);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    const visited = new Array<boolean>(6).fill(false);
+    ctx.strokeStyle = PALETTE.wallLine;
+    ctx.lineWidth = Math.min(9, Math.max(2.5, radius * 0.16));
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'butt';
+
+    for (let start = 0; start < 6; start++) {
+      if (visited[start] || !isWallEdge(start)) continue;
+      const run: number[] = [];
+      let current = start;
+      while (!visited[current] && isWallEdge(current)) {
+        run.push(current);
+        visited[current] = true;
+        current = (current + 1) % 6;
       }
-      case 'wall': {
-        ctx.fillStyle = PALETTE.wallFill;
-        ctx.fill();
-        ctx.strokeStyle = PALETTE.wallStroke;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        break;
+
+      ctx.beginPath();
+      ctx.moveTo(corners[run[0]].x, corners[run[0]].y);
+      for (const edge of run) {
+        const next = corners[(edge + 1) % 6];
+        ctx.lineTo(next.x, next.y);
       }
-      case 'heardWall': {
-        ctx.fillStyle = PALETTE.wallFill;
-        ctx.fill();
-        ctx.strokeStyle = PALETTE.wallStroke;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        this.drawGlyph(center, radius, '✕', PALETTE.glyphWall);
-        break;
-      }
-      case 'heardPassage': {
-        ctx.strokeStyle = PALETTE.heardStroke;
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([4, 3]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        const glyph = appearance.result === 'passage_noisy' ? '!' : '·';
-        const color = appearance.result === 'passage_noisy' ? PALETTE.glyphNoisy : PALETTE.glyphQuiet;
-        this.drawGlyph(center, radius, glyph, color);
-        break;
-      }
-      default:
-        break;
+      if (run.length === 6) ctx.closePath();
+      ctx.stroke();
     }
   }
 
-  private drawGlyph(center: { x: number; y: number }, radius: number, glyph: string, color: string): void {
+  /** 已知可落脚的邻居：亮色描边 + 中心点。 */
+  private drawHighlight(center: Point, radius: number, hasGlyph: boolean): void {
+    const ctx = this.ctx;
+    const corners = hexCorners(center, radius);
+
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
+    ctx.closePath();
+    ctx.strokeStyle = PALETTE.highlight;
+    ctx.lineWidth = Math.min(4, Math.max(1.5, radius * 0.06));
+    ctx.stroke();
+
+    if (!hasGlyph) {
+      ctx.fillStyle = PALETTE.highlightDot;
+      ctx.beginPath();
+      ctx.arc(center.x, center.y, Math.max(2, radius * 0.1), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  /** 共享边上的箭头：指向可落脚的邻居。 */
+  private drawArrow(from: Point, to: Point, radius: number): void {
+    const ctx = this.ctx;
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const length = Math.hypot(dx, dy) || 1;
+    const ux = dx / length;
+    const uy = dy / length;
+    const tx = -uy;
+    const ty = ux;
+
+    const mid = { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+    const size = Math.max(6, radius * 0.3);
+    const tip = { x: mid.x + ux * size * 0.6, y: mid.y + uy * size * 0.6 };
+    const baseX = mid.x - ux * size * 0.35;
+    const baseY = mid.y - uy * size * 0.35;
+
+    ctx.fillStyle = PALETTE.highlight;
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(baseX + tx * size * 0.32, baseY + ty * size * 0.32);
+    ctx.lineTo(baseX - tx * size * 0.32, baseY - ty * size * 0.32);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  private drawGlyph(center: Point, radius: number, glyph: string, color: string): void {
     const ctx = this.ctx;
     ctx.fillStyle = color;
     ctx.font = `${Math.round(radius * 0.9)}px "SFMono-Regular", Consolas, monospace`;
@@ -132,7 +252,7 @@ export class BoardRenderer {
     ctx.fillText(glyph, center.x, center.y + radius * 0.05);
   }
 
-  private drawExit(center: { x: number; y: number }, radius: number): void {
+  private drawExit(center: Point, radius: number): void {
     const ctx = this.ctx;
     ctx.strokeStyle = PALETTE.exitMark;
     ctx.lineWidth = 2;
@@ -146,7 +266,8 @@ export class BoardRenderer {
     ctx.fillText('⟩', center.x, center.y);
   }
 
-  private drawPlayer(center: { x: number; y: number }, radius: number): void {
+  /** 灯光：纯装饰，不揭示任何几何。 */
+  private drawPlayerGlow(center: Point, radius: number): void {
     const ctx = this.ctx;
     const glow = ctx.createRadialGradient(
       center.x,
@@ -162,6 +283,18 @@ export class BoardRenderer {
     ctx.beginPath();
     ctx.arc(center.x, center.y, radius * 2.4, 0, Math.PI * 2);
     ctx.fill();
+  }
+
+  private drawPlayerMarker(center: Point, radius: number): void {
+    const ctx = this.ctx;
+    const corners = hexCorners(center, radius);
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    for (let i = 1; i < 6; i++) ctx.lineTo(corners[i].x, corners[i].y);
+    ctx.closePath();
+    ctx.strokeStyle = PALETTE.playerFill;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
 
     ctx.fillStyle = PALETTE.playerFill;
     ctx.beginPath();
@@ -172,8 +305,8 @@ export class BoardRenderer {
     ctx.stroke();
   }
 
-  /** 屏幕坐标 → 格子；点在画布外返回 null。 */
-  screenToCell(camera: Camera, size: ViewportSize, screenX: number, screenY: number): Axial | null {
+  /** 屏幕坐标 → 格子（取最近中心）。 */
+  screenToCell(camera: Camera, size: ViewportSize, screenX: number, screenY: number): Axial {
     const world = {
       x: (screenX - size.w / 2) / camera.zoom + camera.cx,
       y: (screenY - size.h / 2) / camera.zoom + camera.cy,
