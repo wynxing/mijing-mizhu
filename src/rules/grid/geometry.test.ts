@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BASE_HEX_SIZE,
   DIRECTIONS,
-  PENTAGON_RATIO,
   axialEquals,
   axialKey,
   axialToOffset,
@@ -11,14 +11,16 @@ import {
   hexCorners,
   hexDistance,
   hexDistanceSq,
+  hexEdgeEndpoints,
+  hexEdgeIndex,
   isInBounds,
+  neighbor,
   neighbors,
   offsetToAxial,
   parseAxialKey,
-  pentagonVertices,
   pixelToAxial,
   type Axial,
-  type Point,
+  type DirIndex,
 } from './geometry';
 
 const WIDTH = 24;
@@ -32,23 +34,6 @@ function allCells(): Axial[] {
     }
   }
   return out;
-}
-
-function cross(o: Point, a: Point, b: Point): number {
-  return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-}
-
-function pointInPolygon(point: Point, polygon: Point[]): boolean {
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const a = polygon[i];
-    const b = polygon[j];
-    const intersects =
-      a.y > point.y !== b.y > point.y &&
-      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x;
-    if (intersects) inside = !inside;
-  }
-  return inside;
 }
 
 describe('邻接表', () => {
@@ -152,34 +137,67 @@ describe('坐标换算', () => {
   });
 });
 
-describe('五边形几何', () => {
-  it('五个顶点等半径且凸', () => {
+describe('六边形边几何', () => {
+  it('六边形六个顶点等半径且顶点朝上', () => {
     const center = { x: 100, y: 80 };
-    const verts = pentagonVertices(center, 20);
-    expect(verts).toHaveLength(5);
-    for (const v of verts) {
-      expect(Math.hypot(v.x - center.x, v.y - center.y)).toBeCloseTo(20, 6);
+    const corners = hexCorners(center, 20);
+    expect(corners).toHaveLength(6);
+    for (const corner of corners) {
+      expect(Math.hypot(corner.x - center.x, corner.y - center.y)).toBeCloseTo(20, 6);
     }
-    let sign = 0;
-    for (let i = 0; i < 5; i++) {
-      const c = cross(verts[i], verts[(i + 1) % 5], verts[(i + 2) % 5]);
-      if (sign === 0) sign = Math.sign(c);
-      expect(Math.sign(c)).toBe(sign);
+    const top = Math.min(...corners.map((c) => c.y));
+    expect(corners.filter((c) => c.y === top)).toHaveLength(1);
+  });
+
+  it('边 d 的中点落在「本格中心 → d 方向邻格中心」连线的中点', () => {
+    for (const cell of allCells()) {
+      const center = axialToPixel(cell, BASE_HEX_SIZE);
+      for (let d = 0 as DirIndex; d < 6; d = (d + 1) as DirIndex) {
+        const neighborCenter = axialToPixel(neighbor(cell, d), BASE_HEX_SIZE);
+        const { a, b } = hexEdgeEndpoints(center, BASE_HEX_SIZE, d);
+        expect((a.x + b.x) / 2).toBeCloseTo((center.x + neighborCenter.x) / 2, 6);
+        expect((a.y + b.y) / 2).toBeCloseTo((center.y + neighborCenter.y) / 2, 6);
+        expect(Math.hypot(neighborCenter.x - center.x, neighborCenter.y - center.y)).toBeCloseTo(
+          Math.sqrt(3) * BASE_HEX_SIZE,
+          6,
+        );
+      }
     }
   });
 
-  it('顶点朝上', () => {
-    const verts = pentagonVertices({ x: 0, y: 0 }, 10);
-    const top = Math.min(...verts.map((v) => v.y));
-    expect(verts.filter((v) => v.y === top)).toHaveLength(1);
+  it('E 方向边是右侧竖直边，NE 方向边位于上半部', () => {
+    const east = hexEdgeEndpoints({ x: 0, y: 0 }, BASE_HEX_SIZE, 0);
+    expect(east.a.x).toBeCloseTo(east.b.x, 6);
+    expect(east.a.x).toBeCloseTo((Math.sqrt(3) / 2) * BASE_HEX_SIZE, 6);
+
+    const northEast = hexEdgeEndpoints({ x: 0, y: 0 }, BASE_HEX_SIZE, 1);
+    expect(Math.max(northEast.a.y, northEast.b.y)).toBeLessThanOrEqual(
+      -0.5 * BASE_HEX_SIZE + 1e-9,
+    );
   });
 
-  it('按比例缩放后仍完全落在六边形足迹内', () => {
-    const center = { x: 50, y: 50 };
-    const hex = hexCorners(center, 34);
-    const pent = pentagonVertices(center, 34 * PENTAGON_RATIO);
-    for (const v of pent) {
-      expect(pointInPolygon(v, hex)).toBe(true);
+  it('反向的边在邻格坐标系下是同一条线段', () => {
+    const cell = offsetToAxial(3, 2);
+    const center = axialToPixel(cell, BASE_HEX_SIZE);
+    const neighborCenter = axialToPixel(neighbor(cell, 0), BASE_HEX_SIZE);
+    const here = hexEdgeEndpoints(center, BASE_HEX_SIZE, 0);
+    const there = hexEdgeEndpoints(neighborCenter, BASE_HEX_SIZE, 3);
+    expect(here.a.x).toBeCloseTo(there.b.x, 6);
+    expect(here.a.y).toBeCloseTo(there.b.y, 6);
+    expect(here.b.x).toBeCloseTo(there.a.x, 6);
+    expect(here.b.y).toBeCloseTo(there.a.y, 6);
+  });
+
+  it('六个方向各对应一条互不相同的边', () => {
+    const center = { x: 0, y: 0 };
+    const mids = new Set<string>();
+    for (let d = 0 as DirIndex; d < 6; d = (d + 1) as DirIndex) {
+      expect(hexEdgeIndex(d)).toBe((7 - d) % 6);
+      const { a } = hexEdgeEndpoints(center, BASE_HEX_SIZE, d);
+      mids.add(`${a.x.toFixed(3)},${a.y.toFixed(3)}`);
+      expect(Math.hypot(a.x - center.x, a.y - center.y)).toBeCloseTo(BASE_HEX_SIZE, 6);
     }
+    expect(mids.size).toBe(6);
   });
 });
+
