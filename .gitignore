@@ -4,3 +4,10 @@ dist/
 *.local
 test-results/
 playwright-report/
+
+# 来源不明的外部参考图，仅本地参考，不随仓库分发
+docs/visuals/reference/
+# 生成过程草图
+vibe_images/
+# Qoder Sites 本地部署元数据
+*.qoder.site

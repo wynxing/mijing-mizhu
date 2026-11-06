@@ -56,8 +56,9 @@ export function App(): JSX.Element {
           <span className="legend__item">虚线 = 只探听到、尚未踏足</span>
           <span className="legend__item">
             <span className="legend__glyph">·</span> 通路（安静） <span className="legend__glyph">!</span>{' '}
-            通路（有异响 · 阶段 0 无陷阱）
+            通路（有异响 = 内含陷阱）
           </span>
+          <span className="legend__item">陷阱：踩中受 5 点伤害，并附上流血或中毒</span>
         </div>
       </div>
     </div>

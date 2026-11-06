@@ -1,7 +1,7 @@
 import {
   axialKey,
   axialToOffset,
-  hexDistanceSq,
+  hexDistance,
   neighbors,
   parseAxialKey,
   type Axial,
@@ -90,7 +90,7 @@ export function findPath(map: CellGrid, from: Axial, to: Axial): Axial[] | null 
   const goalKey = axialKey(to);
 
   gScore.set(startKey, 0);
-  open.push(hexDistanceSq(from, to), from);
+  open.push(hexDistance(from, to), from);
 
   while (open.size > 0) {
     const current = open.pop() as Axial;
@@ -113,7 +113,7 @@ export function findPath(map: CellGrid, from: Axial, to: Axial): Axial[] | null 
       if (tentative < (gScore.get(nextKey) ?? Infinity)) {
         gScore.set(nextKey, tentative);
         cameFrom.set(nextKey, currentKey);
-        open.push(tentative + hexDistanceSq(next, to), next);
+        open.push(tentative + hexDistance(next, to), next);
       }
     }
   }

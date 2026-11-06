@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {
+      "src": "docs/visuals/sources/floor-albedo-raw.png",
+      "out": "src/assets/art/floor-albedo.png",
+      "key": null,
+      "cropBottomPct": 6,
+      "size": 512,
+      "normal": true
+    },
+    {
+      "src": "docs/visuals/sources/sniffer-raw.png",
+      "out": "src/assets/art/sniffer.png",
+      "key": "auto",
+      "cropBottomPct": 6,
+      "size": 512
+    }
+  ]
+}

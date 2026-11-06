@@ -106,7 +106,7 @@ export const CARDS: readonly CardDef[] = [
     cost: 1,
     rarity: 'common',
     needsTarget: false,
-    effect: { kind: 'buff', buff: 'immunity', amount: 1, turns: 1 },
+    effect: { kind: 'buff', buff: 'immunity', amount: 1, turns: 2 },
   },
   {
     id: 'swift',

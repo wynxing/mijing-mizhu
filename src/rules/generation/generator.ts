@@ -1,38 +1,40 @@
 import { Rng32 } from '../../core/rng';
 import {
-  DIRECTIONS,
   axialKey,
   axialToOffset,
   hexDistance,
+  neighbor,
   offsetToAxial,
   type Axial,
   type AxialKey,
   type DirIndex,
 } from '../grid/geometry';
-import { CELL_FLOOR, CELL_WALL, cellIndex, type CellGrid } from '../grid/path';
+import { CELL_FLOOR, CELL_WALL, cellIndex, findPath, type CellGrid } from '../grid/path';
 
 export interface LevelGenParams {
   width: number;
   height: number;
-  minMainPath: number;
-  maxMainPath: number;
-  branchCount: number;
-  branchLength: number;
-  shortcutCount: number;
+  /** 目标房间数（设计文档 §9.1：6–9）。 */
+  roomCount: number;
   /** 怪物数量预算：阶段 1 定为 8（见 docs/balance/phase1-mobility.md）。 */
   monsterBudget: number;
+  /** 陷阱密度：占地面格的比例。 */
+  trapDensity: number;
+  /** 起点到出口最短路径的下限（格数，含端点）。 */
+  minPath: number;
+  /** 拆墙造环比例：占候选墙的比例。 */
+  loopRatio: number;
   seed: number;
 }
 
 export const DEFAULT_GEN_PARAMS: LevelGenParams = {
-  width: 24,
-  height: 18,
-  minMainPath: 40,
-  maxMainPath: 90,
-  branchCount: 3,
-  branchLength: 4,
-  shortcutCount: 2,
+  width: 34,
+  height: 24,
+  roomCount: 7,
   monsterBudget: 8,
+  trapDensity: 0.06,
+  minPath: 20,
+  loopRatio: 0.18,
   seed: 1,
 };
 
@@ -41,15 +43,23 @@ export interface MonsterPlacement {
   pos: Axial;
 }
 
+/** 房间矩形，偏移坐标（odd-r）。 */
+export interface RoomRect {
+  col: number;
+  row: number;
+  w: number;
+  h: number;
+}
+
 export interface Level {
   width: number;
   height: number;
   cells: Uint8Array;
   start: Axial;
   exit: Axial;
+  /** 语义为 start→exit 的 A* 最短路。 */
   mainPath: Axial[];
-  branches: Axial[][];
-  shortcuts: Axial[][];
+  rooms: RoomRect[];
   traps: Set<AxialKey>;
   monsters: MonsterPlacement[];
   seed: number;
@@ -62,15 +72,15 @@ export class LevelGenerationError extends Error {
   }
 }
 
-/** 六方向的权重：东向偏置，让走廊总体向右推进但允许上下蜿蜒。 */
-const DIR_WEIGHTS: readonly number[] = Object.freeze([1.0, 0.45, 0.25, 0.15, 0.25, 0.45]);
+const MIN_LEAF = 5;
+const ROOM_MAX_W = 9;
+const ROOM_MAX_H = 7;
+const WALL_AUGMENT_CHANCE = 0.2;
 
-function colOf(a: Axial): number {
-  return axialToOffset(a).col;
-}
-
-function rowOf(a: Axial): number {
-  return a.r;
+interface BspNode {
+  rect: RoomRect;
+  left: BspNode | null;
+  right: BspNode | null;
 }
 
 class Canvas {
@@ -87,13 +97,18 @@ class Canvas {
   }
 
   isInterior(a: Axial): boolean {
-    const col = colOf(a);
-    return col >= 1 && col <= this.width - 2 && rowOf(a) >= 1 && rowOf(a) <= this.height - 2;
+    const { col, row } = axialToOffset(a);
+    return col >= 1 && col <= this.width - 2 && row >= 1 && row <= this.height - 2;
   }
 
   carve(a: Axial): void {
     if (!this.isInterior(a)) return;
     this.cells[cellIndex(this.grid, a)] = CELL_FLOOR;
+  }
+
+  setWall(a: Axial): void {
+    if (!this.isInterior(a)) return;
+    this.cells[cellIndex(this.grid, a)] = CELL_WALL;
   }
 
   isFloor(a: Axial): boolean {
@@ -102,181 +117,277 @@ class Canvas {
   }
 }
 
-function weightedDir(
-  rng: Rng32,
-  candidates: { dir: DirIndex; target: Axial }[],
-  weights: number[],
-): DirIndex | null {
-  const total = weights.reduce((sum, w) => sum + w, 0);
-  if (total <= 0) return null;
-  let roll = rng.next() * total;
-  for (let i = 0; i < candidates.length; i++) {
-    roll -= weights[i];
-    if (roll <= 0) return candidates[i].dir;
+function roomCells(room: RoomRect): Axial[] {
+  const cells: Axial[] = [];
+  for (let row = room.row; row < room.row + room.h; row++) {
+    for (let col = room.col; col < room.col + room.w; col++) {
+      cells.push(offsetToAxial(col, row));
+    }
   }
-  return candidates[candidates.length - 1].dir;
+  return cells;
 }
 
-function step(from: Axial, dir: DirIndex): Axial {
-  const d = DIRECTIONS[dir];
-  return { q: from.q + d.q, r: from.r + d.r };
+function shuffleWithRng<T>(rng: Rng32, items: readonly T[]): T[] {
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = rng.int(0, i);
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
 }
 
-/** 在同一条走廊上随机走，必要时直推到底，保证终点落在对侧边缘。 */
-function walkMainPath(canvas: Canvas, rng: Rng32, params: LevelGenParams): Axial[] {
-  const start: Axial = offsetToAxial(1, 1 + rng.int(0, params.height - 4));
-  canvas.carve(start);
+function leafNode(rect: RoomRect): BspNode {
+  return { rect, left: null, right: null };
+}
 
-  const path: Axial[] = [start];
-  const visited = new Set<AxialKey>([axialKey(start)]);
-  let current = start;
+function canSplit(rect: RoomRect): boolean {
+  return rect.w >= MIN_LEAF * 2 || rect.h >= MIN_LEAF * 2;
+}
 
-  while (path.length < params.maxMainPath) {
-    const candidates: { dir: DirIndex; target: Axial }[] = [];
-    const weights: number[] = [];
-    for (let dir = 0; dir < 6; dir++) {
-      const target = step(current, dir as DirIndex);
-      if (!canvas.isInterior(target)) continue;
-      let weight = DIR_WEIGHTS[dir];
-      if (!visited.has(axialKey(target))) weight *= 3;
-      // 走位已偏东但长度不足时，优先沿东侧上下盘绕，避免提前折返。
-      if (path.length < params.minMainPath && colOf(current) >= params.width - 6) {
-        if (dir === 1 || dir === 5) weight *= 4;
+/** 中段切分：避免切出无法继续细分的窄叶。 */
+function balancedCut(rng: Rng32, size: number): number {
+  const low = Math.max(MIN_LEAF, Math.floor(size * 0.4));
+  const high = Math.min(size - MIN_LEAF, Math.ceil(size * 0.6));
+  return rng.int(low, high);
+}
+
+function splitNode(rng: Rng32, node: BspNode): void {
+  const { rect } = node;
+  const canHorizontal = rect.w >= MIN_LEAF * 2;
+  const canVertical = rect.h >= MIN_LEAF * 2;
+  const horizontal = rect.w >= rect.h ? canHorizontal : !canVertical;
+
+  if (horizontal && canHorizontal) {
+    const leftW = balancedCut(rng, rect.w);
+    node.left = leafNode({ col: rect.col, row: rect.row, w: leftW, h: rect.h });
+    node.right = leafNode({
+      col: rect.col + leftW,
+      row: rect.row,
+      w: rect.w - leftW,
+      h: rect.h,
+    });
+  } else if (canVertical) {
+    const topH = balancedCut(rng, rect.h);
+    node.left = leafNode({ col: rect.col, row: rect.row, w: rect.w, h: topH });
+    node.right = leafNode({
+      col: rect.col,
+      row: rect.row + topH,
+      w: rect.w,
+      h: rect.h - topH,
+    });
+  }
+}
+
+/** BSP 切分：每次都切面积最大的可切叶子，保证叶子大小均匀。 */
+function buildBsp(rng: Rng32, width: number, height: number, roomCount: number): BspNode {
+  const root = leafNode({ col: 1, row: 1, w: width - 2, h: height - 2 });
+  const leaves: BspNode[] = [root];
+
+  while (leaves.length < roomCount) {
+    let bestIndex = -1;
+    let bestArea = -1;
+    for (let i = 0; i < leaves.length; i++) {
+      if (!canSplit(leaves[i].rect)) continue;
+      const area = leaves[i].rect.w * leaves[i].rect.h;
+      if (area > bestArea) {
+        bestArea = area;
+        bestIndex = i;
       }
-      candidates.push({ dir: dir as DirIndex, target });
-      weights.push(weight);
+    }
+    if (bestIndex < 0) break;
+
+    const node = leaves[bestIndex];
+    splitNode(rng, node);
+    if (!node.left || !node.right) break;
+    leaves.splice(bestIndex, 1, node.left, node.right);
+  }
+
+  return root;
+}
+
+function collectRooms(node: BspNode, roomOfLeaf: Map<BspNode, RoomRect>): RoomRect[] {
+  const room = roomOfLeaf.get(node);
+  if (room) return [room];
+  return [
+    ...(node.left ? collectRooms(node.left, roomOfLeaf) : []),
+    ...(node.right ? collectRooms(node.right, roomOfLeaf) : []),
+  ];
+}
+
+/** 后序遍历：按兄弟关系连接左右子树的房间，形成生成树。 */
+function connectSiblings(
+  node: BspNode,
+  canvas: Canvas,
+  rng: Rng32,
+  roomOfLeaf: Map<BspNode, RoomRect>,
+  protectedCells: Set<AxialKey>,
+): void {
+  if (!node.left || !node.right) return;
+  connectSiblings(node.left, canvas, rng, roomOfLeaf, protectedCells);
+  connectSiblings(node.right, canvas, rng, roomOfLeaf, protectedCells);
+
+  const leftRooms = collectRooms(node.left, roomOfLeaf);
+  const rightRooms = collectRooms(node.right, roomOfLeaf);
+  if (leftRooms.length === 0 || rightRooms.length === 0) return;
+
+  const from = roomCells(leftRooms[rng.int(0, leftRooms.length - 1)]);
+  const to = roomCells(rightRooms[rng.int(0, rightRooms.length - 1)]);
+  carveCorridor(
+    canvas,
+    rng,
+    from[rng.int(0, from.length - 1)],
+    to[rng.int(0, to.length - 1)],
+    protectedCells,
+  );
+}
+
+/** 轴向贪心走廊：每步选六边形距离更小的邻格，平局随机。 */
+function carveCorridor(
+  canvas: Canvas,
+  rng: Rng32,
+  from: Axial,
+  to: Axial,
+  protectedCells: Set<AxialKey>,
+): Axial[] {
+  let current = from;
+  canvas.carve(current);
+  protectedCells.add(axialKey(current));
+  const path: Axial[] = [current];
+
+  for (let step = 0; step < 256; step++) {
+    const goalDistance = hexDistance(current, to);
+    if (goalDistance === 0) break;
+
+    const candidates: { cell: Axial; distance: number }[] = [];
+    for (let dir = 0; dir < 6; dir++) {
+      const next = neighbor(current, dir as DirIndex);
+      if (!canvas.isInterior(next)) continue;
+      const distance = hexDistance(next, to);
+      if (distance >= goalDistance) continue;
+      candidates.push({ cell: next, distance });
     }
     if (candidates.length === 0) break;
 
-    const dir = weightedDir(rng, candidates, weights);
-    if (dir === null) break;
-    const next = step(current, dir);
-    current = next;
-    canvas.carve(current);
-    visited.add(axialKey(current));
-    path.push(current);
-
-    if (colOf(current) === params.width - 2 && path.length >= params.minMainPath) break;
-  }
-
-  // 兜底：若走到上限仍未抵达东侧边缘，直推一条走廊过去，保证出口在对边。
-  if (colOf(current) !== params.width - 2) {
-    while (colOf(current) < params.width - 2) {
-      const next = step(current, 0);
-      current = next;
-      canvas.carve(current);
-      path.push(current);
+    let bestDistance = Infinity;
+    for (const candidate of candidates) {
+      if (candidate.distance < bestDistance) bestDistance = candidate.distance;
     }
+    const best = candidates.filter((candidate) => candidate.distance === bestDistance);
+    current = best[rng.int(0, best.length - 1)].cell;
+    canvas.carve(current);
+    protectedCells.add(axialKey(current));
+    path.push(current);
   }
 
   return path;
 }
 
-/** 支路：从主路径上长出一条不通向别处的死胡同短枝。 */
-function carveBranches(
+function roomConnected(canvas: Canvas, room: RoomRect): boolean {
+  const floors: Axial[] = [];
+  for (const cell of roomCells(room)) {
+    if (canvas.isFloor(cell)) floors.push(cell);
+  }
+  if (floors.length === 0) return true;
+
+  const inRoom = (a: Axial): boolean => {
+    const { col, row } = axialToOffset(a);
+    return (
+      col >= room.col &&
+      col < room.col + room.w &&
+      row >= room.row &&
+      row < room.row + room.h
+    );
+  };
+  const seen = new Set<AxialKey>([axialKey(floors[0])]);
+  const queue: Axial[] = [floors[0]];
+  let head = 0;
+  while (head < queue.length) {
+    const current = queue[head++];
+    for (let dir = 0; dir < 6; dir++) {
+      const next = neighbor(current, dir as DirIndex);
+      if (!inRoom(next) || !canvas.isFloor(next)) continue;
+      const key = axialKey(next);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      queue.push(next);
+    }
+  }
+  return seen.size === floors.length;
+}
+
+/** 墙增广：在房间内部随机立墙，断连就回滚。 */
+function augmentWalls(
   canvas: Canvas,
   rng: Rng32,
-  params: LevelGenParams,
-  mainPath: Axial[],
-): Axial[][] {
-  const branches: Axial[][] = [];
-  const mainKeys = new Set(mainPath.map(axialKey));
+  room: RoomRect,
+  protectedCells: Set<AxialKey>,
+): void {
+  for (let row = room.row + 1; row < room.row + room.h - 1; row++) {
+    for (let col = room.col + 1; col < room.col + room.w - 1; col++) {
+      const cell = offsetToAxial(col, row);
+      if (!canvas.isFloor(cell)) continue;
+      if (protectedCells.has(axialKey(cell))) continue;
+      if (rng.next() >= WALL_AUGMENT_CHANCE) continue;
+      canvas.setWall(cell);
+      if (!roomConnected(canvas, room)) canvas.carve(cell);
+    }
+  }
+}
 
-  for (let i = 0; i < params.branchCount; i++) {
-    for (let attempt = 0; attempt < 24; attempt++) {
-      const anchor = mainPath[rng.int(0, mainPath.length - 1)];
-      const dir = rng.int(0, 5) as DirIndex;
-      const stub: Axial[] = [];
-      let current = anchor;
-      for (let stepIndex = 0; stepIndex < params.branchLength; stepIndex++) {
-        const target = step(current, dir);
-        if (!canvas.isInterior(target)) break;
-        if (mainKeys.has(axialKey(target))) break;
-        canvas.carve(target);
-        stub.push(target);
-        current = target;
+/** 造环：拆掉地面邻居 ≥2 的墙格，按比例取。 */
+function carveLoops(canvas: Canvas, rng: Rng32, loopRatio: number): void {
+  const candidates: Axial[] = [];
+  for (let row = 1; row < canvas.height - 1; row++) {
+    for (let col = 1; col < canvas.width - 1; col++) {
+      const cell = offsetToAxial(col, row);
+      if (canvas.isFloor(cell)) continue;
+      let floorNeighbors = 0;
+      for (let dir = 0; dir < 6; dir++) {
+        if (canvas.isFloor(neighbor(cell, dir as DirIndex))) floorNeighbors++;
       }
-      if (stub.length >= 2) {
-        branches.push(stub);
-        break;
-      }
+      if (floorNeighbors >= 2) candidates.push(cell);
     }
   }
 
-  return branches;
+  const shuffled = shuffleWithRng(rng, candidates);
+  const targets = Math.floor(shuffled.length * loopRatio);
+  for (let i = 0; i < targets; i++) canvas.carve(shuffled[i]);
 }
 
-/** 捷径：在主路径的两点之间开一条 L 形走廊，制造环路。 */
-function carveShortcuts(
+/** 从左侧/右侧边缘接一条走廊进指定房间，返回边缘格作为起点/出口。 */
+function attachEdgeCorridor(
   canvas: Canvas,
   rng: Rng32,
-  params: LevelGenParams,
-  mainPath: Axial[],
-): Axial[][] {
-  const shortcuts: Axial[][] = [];
-  const used = new Set<AxialKey>();
-
-  for (let attempt = 0; attempt < 120 && shortcuts.length < params.shortcutCount; attempt++) {
-    const a = mainPath[rng.int(0, mainPath.length - 1)];
-    const b = mainPath[rng.int(0, mainPath.length - 1)];
-    const distance = hexDistance(a, b);
-    if (distance < 4 || distance > 8) continue;
-    if (used.has(axialKey(a)) || used.has(axialKey(b))) continue;
-
-    const horizontalFirst = rng.next() < 0.5;
-    const corridor: Axial[] = [];
-    const seen = new Set<AxialKey>();
-    let current = a;
-    const walkTo = (target: Axial) => {
-      while (!axialEquals(current, target)) {
-        const dir = pickAxisDir(current, target, horizontalFirst);
-        current = step(current, dir);
-        if (!canvas.isInterior(current)) return false;
-        canvas.carve(current);
-        if (!seen.has(axialKey(current))) {
-          seen.add(axialKey(current));
-          corridor.push(current);
-        }
-      }
-      return true;
-    };
-
-    if (!walkTo(b)) continue;
-    used.add(axialKey(a));
-    used.add(axialKey(b));
-    if (corridor.length >= 2) shortcuts.push(corridor);
+  room: RoomRect,
+  side: 'left' | 'right',
+  protectedCells: Set<AxialKey>,
+): Axial {
+  const pool = roomCells(room).filter((cell) => canvas.isFloor(cell));
+  const candidates = pool.length > 0 ? pool : roomCells(room);
+  let anchor = candidates[0];
+  for (const cell of candidates) {
+    const offset = axialToOffset(cell);
+    const bestOffset = axialToOffset(anchor);
+    const better = side === 'left' ? offset.col < bestOffset.col : offset.col > bestOffset.col;
+    if (better) anchor = cell;
   }
 
-  return shortcuts;
-}
-
-function axialEquals(a: Axial, b: Axial): boolean {
-  return a.q === b.q && a.r === b.r;
-}
-
-/** L 形走廊：先沿主轴推进，再沿次轴推进。 */
-function pickAxisDir(current: Axial, target: Axial, horizontalFirst: boolean): DirIndex {
-  const dq = target.q - current.q;
-  const dr = target.r - current.r;
-  const horizontal: DirIndex = dq > 0 ? 0 : 3;
-  const vertical: DirIndex = dr > 0 ? 5 : 2;
-  const first = horizontalFirst ? horizontal : vertical;
-  const second = horizontalFirst ? vertical : horizontal;
-  const firstDelta = horizontalFirst ? Math.abs(dq) : Math.abs(dr);
-  const secondDelta = horizontalFirst ? Math.abs(dr) : Math.abs(dq);
-  if (firstDelta > 0) return first;
-  if (secondDelta > 0) return second;
-  return horizontal;
+  const edgeCol = side === 'left' ? 1 : canvas.width - 2;
+  const edge = offsetToAxial(edgeCol, axialToOffset(anchor).row);
+  carveCorridor(canvas, rng, edge, anchor, protectedCells);
+  return edge;
 }
 
 /**
  * 布点：怪物散布在离起点 ≥ 8 格的地面格上（设计文档 §9.1 的安全期）。
- * 怪物种类按预算分配：嗅犬为主，石卫少量，游魂少量。
+ * 组合 50% 嗅犬 / 20% 石卫 / 15% 游魂 / 15% 蛛巢（§6.4）。
  */
 function placeMonsters(
   canvas: Canvas,
   rng: Rng32,
   start: Axial,
+  exit: Axial,
+  traps: Set<AxialKey>,
   budget: number,
 ): MonsterPlacement[] {
   const candidates: Axial[] = [];
@@ -285,49 +396,139 @@ function placeMonsters(
       const cell = offsetToAxial(col, row);
       if (!canvas.isFloor(cell)) continue;
       if (hexDistance(cell, start) < 8) continue;
+      const key = axialKey(cell);
+      if (key === axialKey(exit) || traps.has(key)) continue;
       candidates.push(cell);
     }
   }
-  for (let i = candidates.length - 1; i > 0; i--) {
-    const j = rng.int(0, i);
-    [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+
+  return shuffleWithRng(rng, candidates)
+    .slice(0, budget)
+    .map((pos, index) => {
+      const ratio = index / Math.max(1, budget);
+      const defId =
+        ratio < 0.5
+          ? 'sniffer'
+          : ratio < 0.7
+            ? 'stonewarden'
+            : ratio < 0.85
+              ? 'wraith'
+              : 'brood';
+      return { defId, pos };
+    });
+}
+
+/** 起点/出口都可达（把全部陷阱视为墙）。 */
+function escapeWithTrapsBlocked(
+  canvas: Canvas,
+  start: Axial,
+  exit: Axial,
+  traps: Set<AxialKey>,
+): boolean {
+  const cells = new Uint8Array(canvas.cells);
+  for (const key of traps) {
+    const [q, r] = key.split(',');
+    cells[cellIndex(canvas.grid, { q: Number(q), r: Number(r) })] = CELL_WALL;
+  }
+  return findPath({ cells, grid: canvas.grid }, start, exit) !== null;
+}
+
+/** 陷阱：非起点/出口、距起点 ≥3 的地面格；每放一个都验证仍可绕开。 */
+function placeTraps(
+  canvas: Canvas,
+  rng: Rng32,
+  start: Axial,
+  exit: Axial,
+  density: number,
+): Set<AxialKey> {
+  const candidates: Axial[] = [];
+  for (let row = 1; row < canvas.height - 1; row++) {
+    for (let col = 1; col < canvas.width - 1; col++) {
+      const cell = offsetToAxial(col, row);
+      if (!canvas.isFloor(cell)) continue;
+      if (hexDistance(cell, start) < 3) continue;
+      const key = axialKey(cell);
+      if (key === axialKey(exit)) continue;
+      candidates.push(cell);
+    }
   }
 
-  const mix: string[] = [];
-  for (let i = 0; i < budget; i++) {
-    const ratio = i / Math.max(1, budget);
-    mix.push(ratio < 0.6 ? 'sniffer' : ratio < 0.85 ? 'stonewarden' : 'wraith');
+  const traps = new Set<AxialKey>();
+  const target = Math.round(candidates.length * density);
+  for (const cell of shuffleWithRng(rng, candidates)) {
+    if (traps.size >= target) break;
+    const key = axialKey(cell);
+    traps.add(key);
+    if (!escapeWithTrapsBlocked(canvas, start, exit, traps)) traps.delete(key);
   }
-
-  return candidates.slice(0, budget).map((pos, index) => ({
-    defId: mix[index],
-    pos,
-  }));
+  return traps;
 }
 
 export function generateLevel(params: LevelGenParams): Level {
   const rng = new Rng32(params.seed);
   const canvas = new Canvas(params.width, params.height);
+  const protectedCells = new Set<AxialKey>();
 
-  const mainPath = walkMainPath(canvas, rng, params);
-  const branches = carveBranches(canvas, rng, params, mainPath);
-  const shortcuts = carveShortcuts(canvas, rng, params, mainPath);
+  const bsp = buildBsp(rng, params.width, params.height, params.roomCount);
+  const leaves: BspNode[] = [];
+  const collectLeaves = (node: BspNode) => {
+    if (!node.left || !node.right) {
+      leaves.push(node);
+      return;
+    }
+    collectLeaves(node.left);
+    collectLeaves(node.right);
+  };
+  collectLeaves(bsp);
 
-  const level: Level = {
+  const rooms: RoomRect[] = [];
+  const roomOfLeaf = new Map<BspNode, RoomRect>();
+  for (const leaf of leaves) {
+    const { rect } = leaf;
+    const maxW = Math.min(rect.w - 2, ROOM_MAX_W);
+    const maxH = Math.min(rect.h - 2, ROOM_MAX_H);
+    if (maxW < 3 || maxH < 3) continue;
+    const w = rng.int(Math.min(5, maxW), maxW);
+    const h = rng.int(Math.min(5, maxH), maxH);
+    const col = rect.col + 1 + rng.int(0, rect.w - 2 - w);
+    const row = rect.row + 1 + rng.int(0, rect.h - 2 - h);
+    const room: RoomRect = { col, row, w, h };
+    rooms.push(room);
+    roomOfLeaf.set(leaf, room);
+    for (const cell of roomCells(room)) canvas.carve(cell);
+  }
+
+  connectSiblings(bsp, canvas, rng, roomOfLeaf, protectedCells);
+
+  for (const room of rooms) augmentWalls(canvas, rng, room, protectedCells);
+  carveLoops(canvas, rng, params.loopRatio);
+
+  const leftRoom = rooms.reduce((best, room) => (room.col < best.col ? room : best), rooms[0]);
+  const rightRoom = rooms.reduce(
+    (best, room) => (room.col + room.w > best.col + best.w ? room : best),
+    rooms[0],
+  );
+  const start = attachEdgeCorridor(canvas, rng, leftRoom, 'left', protectedCells);
+  const exit = attachEdgeCorridor(canvas, rng, rightRoom, 'right', protectedCells);
+
+  const map: CellGrid = { cells: canvas.cells, grid: canvas.grid };
+  const mainPath = findPath(map, start, exit) ?? [start];
+
+  const traps = placeTraps(canvas, rng, start, exit, params.trapDensity);
+  const monsters = placeMonsters(canvas, rng, start, exit, traps, params.monsterBudget);
+
+  return {
     width: params.width,
     height: params.height,
     cells: canvas.cells,
-    start: mainPath[0],
-    exit: mainPath[mainPath.length - 1],
+    start,
+    exit,
     mainPath,
-    branches,
-    shortcuts,
-    traps: new Set<AxialKey>(),
-    monsters: placeMonsters(canvas, rng, mainPath[0], params.monsterBudget),
+    rooms,
+    traps,
+    monsters,
     seed: params.seed,
   };
-
-  return level;
 }
 
 export function levelFromSeed(seed: number, overrides?: Partial<LevelGenParams>): Level {
@@ -339,11 +540,11 @@ export function levelAsCellGrid(level: Level): CellGrid {
 }
 
 export function cellAtLevel(level: Level, a: Axial): number {
-  const col = colOf(a);
-  if (col < 0 || col >= level.width || rowOf(a) < 0 || rowOf(a) >= level.height) {
+  const col = axialToOffset(a).col;
+  if (col < 0 || col >= level.width || a.r < 0 || a.r >= level.height) {
     return CELL_WALL;
   }
-  return level.cells[rowOf(a) * level.width + col];
+  return level.cells[a.r * level.width + col];
 }
 
 export function isWalkableAtLevel(level: Level, a: Axial): boolean {

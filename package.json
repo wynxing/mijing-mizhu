@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "《迷雾迷径》回合制六边形网格迷宫探索 Roguelite · 阶段 0 可玩骨架",
+  "description": "《迷雾迷径》回合制六边形网格迷宫探索 Roguelite · 阶段 1 可玩版本",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
@@ -12,21 +12,26 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test",
-    "balance": "tsx scripts/balance-report.ts"
+    "balance": "tsx scripts/balance-report.ts",
+    "art": "tsx scripts/process-art.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "three": "^0.187.0",
     "zustand": "^4.5.5"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.1",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.1.0",
+    "@types/pngjs": "^6.0.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^25.0.1",
+    "pngjs": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^5.6.3",
     "vite": "^6.0.7",

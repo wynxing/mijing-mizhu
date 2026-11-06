@@ -43,7 +43,12 @@ describe('探听结果与真实地形一致', () => {
           if (cellAtLevel(level, cell) === CELL_WALL) continue;
           const results = resolveListen(terrain, cell);
           for (const neighbor of neighbors(cell)) {
-            const actual = cellAtLevel(level, neighbor) === CELL_WALL ? 'wall' : 'passage_quiet';
+            const actual =
+              cellAtLevel(level, neighbor) === CELL_WALL
+                ? 'wall'
+                : terrain.traps.has(axialKey(neighbor))
+                  ? 'passage_noisy'
+                  : 'passage_quiet';
             expect(results.get(axialKey(neighbor))).toBe(actual);
           }
         }
@@ -51,7 +56,7 @@ describe('探听结果与真实地形一致', () => {
     }
   });
 
-  it('阶段 0 不会出现「有异响」', () => {
+  it('站在陷阱旁探听会返回「有异响」', () => {
     const level = generateLevel({ ...DEFAULT_GEN_PARAMS, seed: 5 });
     const terrain = terrainOf(level);
     let noisy = 0;
@@ -64,7 +69,7 @@ describe('探听结果与真实地形一致', () => {
         }
       }
     }
-    expect(noisy).toBe(0);
+    expect(noisy).toBeGreaterThan(0);
   });
 
   it('返回六个方向的完整结果，越界方向为墙', () => {

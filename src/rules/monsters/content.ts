@@ -34,7 +34,7 @@ export const SNIFFER: MonsterDef = {
   move: { kind: 'dice', sides: 6 },
   ignoresWalls: false,
   laysTraps: false,
-  eager: true,
+  eager: false,
 };
 
 export const STONEWARDEN: MonsterDef = {
@@ -58,7 +58,7 @@ export const WRAITH: MonsterDef = {
   move: { kind: 'dice', sides: 6 },
   ignoresWalls: true,
   laysTraps: false,
-  eager: true,
+  eager: false,
 };
 
 export const BROOD: MonsterDef = {

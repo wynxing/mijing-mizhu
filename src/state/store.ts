@@ -27,6 +27,8 @@ export interface GameStore {
 
   zoomAt(factor: number, size: ViewportSize, at: Point): void;
   panBy(dx: number, dy: number): void;
+  /** 直接设定视图中心：跟随镜头交还给手动拖拽时用来对齐。 */
+  setCamera(cx: number, cy: number): void;
   setFollow(follow: boolean): void;
   centerOnPlayer(): void;
 }
@@ -70,6 +72,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   panBy: (dx, dy) =>
     set((state) => ({ view: { ...state.view, ...panBy(state.view, dx, dy) } })),
+
+  setCamera: (cx, cy) => set((state) => ({ view: { ...state.view, cx, cy } })),
 
   setFollow: (follow) => set((state) => ({ view: { ...state.view, follow } })),
 

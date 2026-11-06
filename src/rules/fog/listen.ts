@@ -16,7 +16,7 @@ export interface LevelTerrain {
 
 /**
  * 探听结果：玩家所在格的每一个相邻格返回三态之一。
- * 越界一律视为墙；阶段 0 陷阱集恒为空，因此不可能返回「有异响」。
+ * 越界一律视为墙；相邻格有陷阱时返回「有异响」。
  */
 export function resolveListen(
   terrain: LevelTerrain,

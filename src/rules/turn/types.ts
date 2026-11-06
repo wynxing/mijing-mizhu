@@ -6,6 +6,7 @@ import type { ScentState } from '../fog/scent';
 import type { Monster } from '../monsters/brain';
 import type { Buff } from '../buffs/buffs';
 import type { CardDef } from '../cards/content';
+import type { GameEvent } from './events';
 
 /** 手牌实例：同名卡有多张，每张都要有唯一标识。 */
 export interface HandCard {
@@ -53,6 +54,11 @@ export interface GameState {
   stationaryTurns: number;
   log: LogEntry[];
   notice: string | null;
+  /**
+   * 最近一次状态转移产生的演出事件，每次转移整体替换。
+   * 表现层据此播放动画；规则层自身不读它。
+   */
+  events: GameEvent[];
   rngState: number;
   seed: number;
 }

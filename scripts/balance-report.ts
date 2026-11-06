@@ -17,7 +17,15 @@ function line(label: string, r: BalanceReport): string {
 
 console.log('=== 阶段 1 机动性模拟（关卡自带布点 · 200 局）===');
 for (const policy of ['run', 'fight', 'escape'] as const) {
-  console.log(line(`策略 ${policy}`, runBalance(policy, SEEDS, 8)));
+  const report = runBalance(policy, SEEDS, 8);
+  console.log(line(`策略 ${policy}`, report));
+  console.log(
+    `  地图 填充 ${(report.avgFill * 100).toFixed(1)}%` +
+      ` · 环 ${report.avgCycles.toFixed(1)}` +
+      ` · 死路 ${report.avgDeadEnds.toFixed(1)}` +
+      ` · 最短路 ${report.avgPathLength.toFixed(1)} 步` +
+      ` · 陷阱 ${report.avgTrapTriggers.toFixed(1)} 次 / ${report.avgTrapDamage.toFixed(1)} 伤`,
+  );
 }
 
 console.log('\n=== 怪物数量扫描（策略 run）===');

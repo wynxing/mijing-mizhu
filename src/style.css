@@ -6,9 +6,9 @@
   --ink-dim: #7f8fa3;
   --accent: #c9a227;
   --accent-dim: #6b5714;
-  --floor: #16202b;
-  --floor-edge: #2b3a4c;
-  --wall-line: #8a6a4a;
+  --floor: #7a6248;
+  --floor-edge: #3d3128;
+  --wall-line: #f0d9a0;
   --highlight: #7fd6a3;
   --heard: #3d5a73;
   --heard-ink: #7fa6c4;
@@ -109,6 +109,60 @@ button:disabled {
 
 .stat--eye {
   cursor: help;
+}
+
+/* 体力条：填充条先掉，残影条慢半拍跟上，读得出「刚刚掉了多少」 */
+.hpbar {
+  position: relative;
+  display: inline-block;
+  width: 96px;
+  height: 9px;
+  border: 1px solid var(--panel-edge);
+  border-radius: 3px;
+  background: #1c1218;
+  overflow: hidden;
+}
+
+.hpbar__fill,
+.hpbar__ghost {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  display: block;
+}
+
+.hpbar__fill {
+  z-index: 2;
+  background: var(--danger);
+  transition: width 260ms ease-out;
+}
+
+.hpbar__ghost {
+  z-index: 1;
+  background: #e8c9a0;
+  transition: width 520ms ease-out 220ms;
+}
+
+.hpbar__text {
+  font-family: var(--font-num);
+}
+
+.stat--hp--hurt .hpbar {
+  animation: hp-hit 320ms ease-out;
+}
+
+.stat--hp--hurt .hpbar__fill {
+  background: #ff7a5c;
+}
+
+@keyframes hp-hit {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 122, 92, 0.85);
+  }
+  100% {
+    box-shadow: 0 0 0 9px rgba(255, 122, 92, 0);
+  }
 }
 
 .log {

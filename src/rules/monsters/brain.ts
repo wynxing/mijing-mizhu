@@ -21,6 +21,8 @@ export type MonsterIntent =
   | { kind: 'frozen' };
 
 export interface Monster {
+  /** 实例唯一标识：同种怪物可以有多只，表现层靠它跟踪血量与位置。 */
+  uid: string;
   def: MonsterDef;
   pos: Axial;
   hp: number;
@@ -33,10 +35,13 @@ export interface Monster {
   spotted: boolean;
   /** 本回合被定身。 */
   frozen: boolean;
+  /** 被驱散后的失智回合数：期间不感知。 */
+  dazeTurns: number;
 }
 
-export function createMonster(def: MonsterDef, pos: Axial): Monster {
+export function createMonster(def: MonsterDef, pos: Axial, uid: string): Monster {
   return {
+    uid,
     def,
     pos,
     hp: def.hp,
@@ -46,6 +51,7 @@ export function createMonster(def: MonsterDef, pos: Axial): Monster {
     intent: { kind: 'search' },
     spotted: false,
     frozen: false,
+    dazeTurns: 0,
   };
 }
 
@@ -76,6 +82,7 @@ export function moveStepsFor(def: MonsterDef, rng: Rng32): number {
 /** 预掷下一回合的意图：相邻就打，否则走 N 格。 */
 export function rollIntent(monster: Monster, rng: Rng32, playerPos: Axial): Monster {
   if (monster.frozen) return { ...monster, intent: { kind: 'frozen' } };
+  if (monster.spotted) return { ...monster, intent: { kind: 'search' } };
   if (hexDistance(monster.pos, playerPos) <= 1) {
     return { ...monster, intent: { kind: 'attack', damage: monster.def.damage } };
   }
@@ -96,6 +103,7 @@ export function updatePerception(
   playerStationaryTurns: number,
 ): Monster {
   if (monster.frozen) return monster;
+  if (monster.dazeTurns > 0) return { ...monster, dazeTurns: monster.dazeTurns - 1 };
 
   if (monster.state === 'chase') {
     if (playerStationaryTurns >= 2 && inLowScentArea(scent, playerPos)) {
@@ -170,12 +178,19 @@ export function actMonster(
   playerPos: Axial,
   rng: Rng32,
 ): MonsterAction {
+  // 冻结只持续一个怪物结算：不行动、不感知，由回合末统一解除。
   if (monster.frozen) {
-    return { monster: { ...monster, frozen: false }, damage: 0, traps: [] };
+    return { monster, damage: 0, traps: [] };
+  }
+
+  const next: Monster = { ...monster, spotted: false };
+
+  // 首次发现的预警回合：不移动、不攻击，只把「!」留给玩家看见。
+  if (monster.spotted && !monster.def.eager) {
+    return { monster: next, damage: 0, traps: [] };
   }
 
   const traps: Axial[] = [];
-  const next: Monster = { ...monster, spotted: false };
 
   if (monster.def.laysTraps) {
     for (const delta of DIRECTIONS) {
@@ -185,7 +200,9 @@ export function actMonster(
   }
 
   if (monster.intent.kind === 'attack') {
-    return { monster: next, damage: monster.def.damage, traps };
+    // 意图结算前复查距离：玩家退开则攻击落空，不临时改成移动。
+    const adjacent = hexDistance(monster.pos, playerPos) <= 1;
+    return { monster: next, damage: adjacent ? monster.def.damage : 0, traps };
   }
 
   if (monster.intent.kind === 'search' || monster.intent.kind === 'frozen') {

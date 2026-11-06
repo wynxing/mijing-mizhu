@@ -13,6 +13,8 @@ export function snapshotGame(state: GameState): string {
     .map(([key, result]) => `${key}=${result}`)
     .join(',');
   const log = state.log.map((entry) => `${entry.turn}:${entry.text}`).join(';');
+  // 蛛巢会在局内增删陷阱，陷阱集合必须进入逐步哈希，否则回放分叉可能漏检。
+  const traps = Array.from(state.level.traps).sort().join(',');
 
   return [
     `seed=${state.seed}`,
@@ -29,6 +31,7 @@ export function snapshotGame(state: GameState): string {
     `visited=${visited}`,
     `known=${known}`,
     `level=${levelHash(state.level)}`,
+    `traps=${traps}`,
     `log=${log}`,
   ].join('\n');
 }

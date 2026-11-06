@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createGame } from '../game/createGame';
-import { reduceGame, movementPointsOf } from '../turn/reducer';
-import { axialKey, neighbor, offsetToAxial } from '../grid/geometry';
+import { reduceGame, movementPointsOf, listenLimit } from '../turn/reducer';
+import { LISTEN_PER_TURN } from '../fog/listen';
+import { axialKey, neighbor, offsetToAxial, type AxialKey } from '../grid/geometry';
 import { CARDS, STARTING_HAND, cardDef } from './content';
 import { hitPlayer, damageDealt, playerAttack } from '../combat/combat';
 import { addBuff, type Buff } from '../buffs/buffs';
@@ -122,6 +123,76 @@ describe('出牌', () => {
     const before = movementPointsOf(state);
     const next = reduceGame(state, { type: 'playCard', cardUid: 'bandage-0', dieId: 0 });
     expect(movementPointsOf(next)).toBe(before - 6);
+  });
+
+  it('疾行让本回合移动点 +1', () => {
+    const state = stateWithCard('swift');
+    const before = movementPointsOf(state);
+    const next = reduceGame(state, { type: 'playCard', cardUid: 'swift-0', dieId: 0 });
+    expect(movementPointsOf(next)).toBe(before - 6 + 1);
+  });
+
+  it('探查术让本回合探听上限 +3', () => {
+    const state = stateWithCard('scout');
+    expect(listenLimit(state)).toBe(LISTEN_PER_TURN);
+    const next = reduceGame(state, { type: 'playCard', cardUid: 'scout-0', dieId: 0 });
+    expect(listenLimit(next)).toBe(LISTEN_PER_TURN + 3);
+  });
+
+  it('屏息让身边怪物降级，且不泄露玩家位置', () => {
+    const state = createGame(9);
+    const monster = state.monsters[0];
+    const adjacent = neighbor(state.player.pos, 0);
+    const prepared = {
+      ...state,
+      hand: [{ uid: 'holdbreath-0', def: cardDef('holdbreath') }],
+      monsters: [
+        { ...monster, pos: adjacent, state: 'chase' as const, lastKnown: state.player.pos },
+      ],
+      dice: [
+        { id: 0, value: 6, reserved: false },
+        { id: 1, value: 6, reserved: false },
+      ],
+    };
+    const next = reduceGame(prepared, {
+      type: 'playCard',
+      cardUid: 'holdbreath-0',
+      dieId: 0,
+    });
+    expect(next.monsters[0].state).toBe('alert');
+    expect(next.monsters[0].lastKnown).toEqual(adjacent);
+  });
+
+  it('定身让怪物跳过本回合行动，并在回合末解除', () => {
+    const state = createGame(9);
+    const monster = state.monsters[0];
+    const adjacent = neighbor(state.player.pos, 0);
+    const prepared = {
+      ...state,
+      level: { ...state.level, traps: new Set<AxialKey>() },
+      hand: [{ uid: 'root-0', def: cardDef('root') }],
+      monsters: [
+        {
+          ...monster,
+          pos: adjacent,
+          state: 'chase' as const,
+          intent: { kind: 'attack' as const, damage: monster.def.damage },
+        },
+      ],
+      dice: [{ id: 0, value: 6, reserved: false }],
+    };
+    const frozen = reduceGame(prepared, {
+      type: 'playCard',
+      cardUid: 'root-0',
+      dieId: 0,
+      targetKey: axialKey(adjacent),
+    });
+    expect(frozen.monsters[0].intent).toEqual({ kind: 'frozen' });
+
+    const next = reduceGame(frozen, { type: 'endTurn' });
+    expect(next.player.hp).toBe(prepared.player.hp);
+    expect(next.monsters[0].pos).toEqual(adjacent);
+    expect(next.monsters[0].frozen).toBe(false);
   });
 });
 

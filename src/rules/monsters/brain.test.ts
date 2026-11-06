@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Rng32 } from '../../core/rng';
 import { offsetToAxial } from '../grid/geometry';
 import { addScent, createScent } from '../fog/scent';
-import { SNIFFER, STONEWARDEN, WRAITH } from './content';
+import { SNIFFER, STONEWARDEN, WRAITH, GUARDIAN } from './content';
 import {
   actMonster,
   createMonster,
@@ -15,7 +15,7 @@ import {
 const PLAYER = offsetToAxial(5, 5);
 
 function monsterAt(def = SNIFFER, pos = offsetToAxial(5, 5)): Monster {
-  return createMonster(def, pos);
+  return createMonster(def, pos, 'test-monster');
 }
 
 describe('怪物意图', () => {
@@ -105,5 +105,83 @@ describe('感知与三态', () => {
       new Rng32(1),
     );
     expect(next.monster.pos).toEqual(offsetToAxial(5, 4));
+  });
+});
+
+describe('追击解除与意图时序', () => {
+  const emptyMap = { cells: new Uint8Array(0), grid: { width: 0, height: 0 } };
+
+  it('冻结回合不感知，也不自行解除定身', () => {
+    const frozen = {
+      ...monsterAt(SNIFFER, offsetToAxial(6, 5)),
+      state: 'wander' as const,
+      frozen: true,
+    };
+    const perceived = updatePerception(frozen, createScent(), PLAYER, 0);
+    expect(perceived.state).toBe('wander');
+    expect(perceived.frozen).toBe(true);
+
+    const acted = actMonster(frozen, emptyMap, PLAYER, new Rng32(1));
+    expect(acted.monster.frozen).toBe(true);
+    expect(acted.monster.pos).toEqual(frozen.pos);
+    expect(acted.damage).toBe(0);
+  });
+
+  it('驱散后 2 回合内不再感知', () => {
+    const dazed = {
+      ...monsterAt(SNIFFER, offsetToAxial(6, 5)),
+      state: 'wander' as const,
+      dazeTurns: 2,
+    };
+    const first = updatePerception(dazed, createScent(), PLAYER, 0);
+    expect(first.state).toBe('wander');
+    expect(first.dazeTurns).toBe(1);
+
+    const second = updatePerception(first, createScent(), PLAYER, 0);
+    expect(second.state).toBe('wander');
+    expect(second.dazeTurns).toBe(0);
+
+    const third = updatePerception(second, createScent(), PLAYER, 0);
+    expect(third.state).toBe('chase');
+  });
+
+  it('预警回合不行动，并清除标记', () => {
+    const spotted = {
+      ...monsterAt(SNIFFER, offsetToAxial(6, 5)),
+      state: 'chase' as const,
+      spotted: true,
+      intent: { kind: 'attack' as const, damage: SNIFFER.damage },
+    };
+    const acted = actMonster(spotted, emptyMap, PLAYER, new Rng32(1));
+    expect(acted.damage).toBe(0);
+    expect(acted.monster.pos).toEqual(spotted.pos);
+    expect(acted.monster.spotted).toBe(false);
+  });
+
+  it('预警中的怪物意图是搜索', () => {
+    const monster = { ...monsterAt(SNIFFER, offsetToAxial(6, 5)), spotted: true };
+    expect(rollIntent(monster, new Rng32(1), PLAYER).intent).toEqual({ kind: 'search' });
+  });
+
+  it('eager 怪物跳过预警直接行动', () => {
+    const guardian = {
+      ...monsterAt(GUARDIAN, offsetToAxial(6, 5)),
+      state: 'chase' as const,
+      spotted: true,
+      intent: { kind: 'attack' as const, damage: GUARDIAN.damage },
+    };
+    expect(actMonster(guardian, emptyMap, PLAYER, new Rng32(1)).damage).toBe(
+      GUARDIAN.damage,
+    );
+  });
+
+  it('攻击结算时玩家已离开相邻格则落空', () => {
+    const monster = {
+      ...monsterAt(SNIFFER, offsetToAxial(6, 5)),
+      state: 'chase' as const,
+      intent: { kind: 'attack' as const, damage: SNIFFER.damage },
+    };
+    const acted = actMonster(monster, emptyMap, offsetToAxial(10, 10), new Rng32(1));
+    expect(acted.damage).toBe(0);
   });
 });

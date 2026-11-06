@@ -10,7 +10,16 @@ export default defineConfig({
     strictPort: true,
     watch: { ignored: ['**/.qoder/**'] },
   },
-  build: { outDir: 'dist', assetsDir: 'assets' },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        // three 单独成 chunk：本体大但极少变动，与游戏代码分开缓存。
+        manualChunks: { three: ['three'] },
+      },
+    },
+  },
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],

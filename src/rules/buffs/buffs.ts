@@ -4,7 +4,9 @@ export type BuffKind =
   | 'damageReduction'
   | 'immunity'
   | 'evadeOnce'
-  | 'extraMove';
+  | 'extraMove'
+  | 'bleed'
+  | 'poison';
 
 export interface Buff {
   id: string;
@@ -35,9 +37,17 @@ export function tickBuffs(buffs: readonly Buff[]): Buff[] {
   return out;
 }
 
-/** 回合结束：免伤类在此失效。 */
+/** 回合结束：免伤类递减，归零才失效。 */
 export function expireAtTurnEnd(buffs: readonly Buff[]): Buff[] {
-  return buffs.filter((buff) => !TURN_END_KINDS.includes(buff.kind));
+  const out: Buff[] = [];
+  for (const buff of buffs) {
+    if (!TURN_END_KINDS.includes(buff.kind)) {
+      out.push(buff);
+      continue;
+    }
+    if (buff.turns - 1 > 0) out.push({ ...buff, turns: buff.turns - 1 });
+  }
+  return out;
 }
 
 export function sumBuff(buffs: readonly Buff[], kind: BuffKind): number {

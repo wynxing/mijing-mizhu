@@ -3,10 +3,16 @@ import { axialKey, hexDistance, type Axial } from '../rules/grid/geometry';
 import { findPath } from '../rules/grid/path';
 import {
   DEFAULT_GEN_PARAMS,
-  generateLevel,
   levelAsCellGrid,
   type Level,
 } from '../rules/generation/generator';
+import {
+  countDeadEnds,
+  countFloorCells,
+  countFloorEdges,
+  generateValidLevel,
+} from '../rules/generation/validate';
+import { TRAP_DAMAGE, rollTrapDebuff, trapDebuffDamage } from '../rules/traps/trap';
 import { addScent, createScent, decayScent, type ScentState } from '../rules/fog/scent';
 import { monsterDef as monsterDefOf } from '../rules/monsters/content';
 import {
@@ -37,6 +43,14 @@ export interface RunResult {
   engagements: number;
   /** 击杀的怪物数。 */
   kills: number;
+  /** 地图指标（同一种子三个策略共用，便于报告读到生成质量）。 */
+  fill: number;
+  cycles: number;
+  deadEnds: number;
+  pathLength: number;
+  /** 踩中的陷阱数与陷阱总承伤（含流血/中毒）。 */
+  trapTriggers: number;
+  trapDamage: number;
 }
 
 export interface BalanceReport {
@@ -50,6 +64,12 @@ export interface BalanceReport {
   avgMinDistance: number;
   avgEngagements: number;
   avgKills: number;
+  avgFill: number;
+  avgCycles: number;
+  avgDeadEnds: number;
+  avgPathLength: number;
+  avgTrapTriggers: number;
+  avgTrapDamage: number;
 }
 
 /** 玩家的回合策略：跑、原地打、原地躲。 */
@@ -79,9 +99,15 @@ export function simulateRun(
   monsterCount = 8,
 ): RunResult {
   const rng = new Rng32(seed);
-  const level: Level = generateLevel({ ...DEFAULT_GEN_PARAMS, seed });
+  const level: Level = generateValidLevel({ ...DEFAULT_GEN_PARAMS, seed });
   const map = levelAsCellGrid(level);
   const options = POLICY_OPTIONS[policy];
+
+  const floorCells = countFloorCells(level);
+  const fill = floorCells / (level.width * level.height);
+  const cycles = countFloorEdges(level) - floorCells + 1;
+  const deadEnds = countDeadEnds(level);
+  const pathLength = (findPath(map, level.start, level.exit)?.length ?? 1) - 1;
 
   let pos = level.start;
   let hp = 100;
@@ -96,11 +122,32 @@ export function simulateRun(
   let distanceSamples = 0;
   let engagements = 0;
   let kills = 0;
+  let trapTriggers = 0;
+  let trapDamage = 0;
+  let debuffTurns = 0;
+  let debuffPerTurn = 0;
+  const traps = new Set(level.traps);
+
+  const stepOn = (cell: Axial): void => {
+    const key = axialKey(cell);
+    if (!traps.has(key)) return;
+    traps.delete(key);
+    trapTriggers++;
+    trapDamage += TRAP_DAMAGE;
+    damageTaken += TRAP_DAMAGE;
+    hp -= TRAP_DAMAGE;
+    const rolled = rollTrapDebuff(rng.state);
+    rng.state = rolled.rngState;
+    debuffTurns = 3;
+    debuffPerTurn = trapDebuffDamage(rolled.debuff);
+  };
 
   // 用游戏自己的布点逻辑，模拟结果才对游戏有效
   let monsters: Monster[] = level.monsters
     .slice(0, monsterCount)
-    .map((placement) => createMonster(monsterDefOf(placement.defId), placement.pos));
+    .map((placement, index) =>
+      createMonster(monsterDefOf(placement.defId), placement.pos, `sim-${index}`),
+    );
   monsters = monsters.map((m) => rollIntent(m, rng, pos));
 
   while (turn <= maxTurns) {
@@ -134,12 +181,14 @@ export function simulateRun(
               monsters = monsters.filter((m) => m !== blocker);
               pos = next;
               traversed.push(next);
+              stepOn(next);
             }
             break;
           }
           pos = next;
           traversed.push(next);
           budget--;
+          stepOn(next);
         }
       }
     }
@@ -162,6 +211,13 @@ export function simulateRun(
       const perceived = updatePerception(m, scent, pos, stationaryTurns);
       return rollIntent(perceived, rng, pos);
     });
+
+    if (debuffTurns > 0) {
+      hp -= debuffPerTurn;
+      damageTaken += debuffPerTurn;
+      trapDamage += debuffPerTurn;
+      debuffTurns--;
+    }
 
     const chasing = monsters.some((m) => m.state === 'chase');
     if (chasing) turnsInChase++;
@@ -187,6 +243,12 @@ export function simulateRun(
         avgDistance: distanceSum / distanceSamples,
         engagements,
         kills,
+        fill,
+        cycles,
+        deadEnds,
+        pathLength,
+        trapTriggers,
+        trapDamage,
       };
     }
 
@@ -203,6 +265,12 @@ export function simulateRun(
         avgDistance: distanceSum / distanceSamples,
         engagements,
         kills,
+        fill,
+        cycles,
+        deadEnds,
+        pathLength,
+        trapTriggers,
+        trapDamage,
       };
     }
 
@@ -221,6 +289,12 @@ export function simulateRun(
     avgDistance: distanceSum / distanceSamples,
     engagements,
     kills,
+    fill,
+    cycles,
+    deadEnds,
+    pathLength,
+    trapTriggers,
+    trapDamage,
   };
 }
 
@@ -249,5 +323,11 @@ export function runBalance(
     avgMinDistance: avg((r) => r.minDistance),
     avgEngagements: avg((r) => r.engagements),
     avgKills: avg((r) => r.kills),
+    avgFill: avg((r) => r.fill),
+    avgCycles: avg((r) => r.cycles),
+    avgDeadEnds: avg((r) => r.deadEnds),
+    avgPathLength: avg((r) => r.pathLength),
+    avgTrapTriggers: avg((r) => r.trapTriggers),
+    avgTrapDamage: avg((r) => r.trapDamage),
   };
 }

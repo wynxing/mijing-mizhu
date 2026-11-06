@@ -16,8 +16,8 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
   const rng = new Rng32(level.seed);
   const dice = rollDice(rng);
 
-  const monsters = level.monsters.map((placement) =>
-    createMonster(monsterDef(placement.defId), placement.pos),
+  const monsters = level.monsters.map((placement, index) =>
+    createMonster(monsterDef(placement.defId), placement.pos, `monster-${index}`),
   );
   const hand = STARTING_HAND.map((id, index) => ({
     uid: `${id}-${index}`,
@@ -43,6 +43,7 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
     stationaryTurns: 0,
     log: [{ text: '你踏入漆黑的迷宫', turn: 1 }],
     notice: null,
+    events: [],
     rngState: rng.state,
     seed: level.seed,
   };

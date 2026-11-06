@@ -1,8 +1,10 @@
 import {
+  DIRECTIONS,
   axialKey,
   hexDistance,
   neighbor,
   offsetToAxial,
+  parseAxialKey,
   type Axial,
   type AxialKey,
   type DirIndex,
@@ -27,12 +29,17 @@ export type CellAppearance =
   /** 只探听到是通路。 */
   | { kind: 'heardPassage'; result: ListenResult };
 
+/** 邻居在画面上的观感：可见地板 / 只探听到的通路 / 虚空（未知或已知是墙）。 */
+export type NeighborView = 'floor' | 'passage' | 'void';
+
 export interface RenderCell {
   appearance: CellAppearance;
   /** 玩家已确认可以站立（已踏足，或探听到是通路）。 */
   standable: boolean;
   /** 六条边是否被墙占据，索引与 DIRECTIONS 同序。 */
   wallEdges: boolean[];
+  /** 六条边外的邻居观感，索引与 DIRECTIONS 同序；只有地板格有值。 */
+  views: NeighborView[];
 }
 
 export interface StandableNeighbor {
@@ -41,7 +48,10 @@ export interface StandableNeighbor {
 }
 
 export interface RenderMonster {
+  uid: string;
   pos: Axial;
+  hp: number;
+  maxHp: number;
   state: MonsterState;
   intent: MonsterIntent;
   name: string;
@@ -49,13 +59,19 @@ export interface RenderMonster {
   visible: boolean;
   /** 是否是当前选中的卡牌的目标。 */
   targeted: boolean;
+  /** 刚发现玩家的预警回合：头顶显示「!」，本回合不会行动。 */
+  spotted: boolean;
 }
 
 export interface RenderModel {
   cells: Map<AxialKey, RenderCell>;
   player: Axial;
+  playerHp: number;
+  playerMaxHp: number;
   exit: Axial;
   status: GameStatus;
+  /** 关卡种子：表现层靠它认出「换了一局」。 */
+  seed: number;
   /** 玩家周围「已知可落脚」的邻居。 */
   standableNeighbors: StandableNeighbor[];
   monsters: RenderMonster[];
@@ -65,6 +81,10 @@ export interface RenderModel {
 
 function noWalls(): boolean[] {
   return [false, false, false, false, false, false];
+}
+
+function noViews(): NeighborView[] {
+  return ['void', 'void', 'void', 'void', 'void', 'void'];
 }
 
 /**
@@ -89,6 +109,7 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
           appearance: { kind: 'floor' },
           standable: true,
           wallEdges,
+          views: noViews(),
         });
         continue;
       }
@@ -99,6 +120,7 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
           appearance: { kind: 'knownWall' },
           standable: false,
           wallEdges: noWalls(),
+          views: noViews(),
         });
         continue;
       }
@@ -107,6 +129,7 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
           appearance: { kind: 'heardPassage', result: heard },
           standable: true,
           wallEdges: noWalls(),
+          views: noViews(),
         });
         continue;
       }
@@ -115,8 +138,23 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
         appearance: { kind: 'unknown' },
         standable: false,
         wallEdges: noWalls(),
+        views: noViews(),
       });
     }
+  }
+
+  // 地块外缘：邻居不是可见地板时，那条边就是石台的断崖
+  for (const [key, cell] of cells) {
+    if (cell.appearance.kind !== 'floor') continue;
+    const axial = parseAxialKey(key);
+    cell.views = DIRECTIONS.map((_, dir) => {
+      const next = neighbor(axial, dir as DirIndex);
+      const neighborCell = cells.get(axialKey(next));
+      if (!neighborCell) return 'void';
+      if (neighborCell.appearance.kind === 'floor') return 'floor';
+      if (neighborCell.appearance.kind === 'heardPassage') return 'passage';
+      return 'void';
+    });
   }
 
   const standableNeighbors: StandableNeighbor[] = [];
@@ -127,7 +165,10 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
   }
 
   const monsters: RenderMonster[] = state.monsters.map((monster) => ({
+    uid: monster.uid,
     pos: monster.pos,
+    hp: monster.hp,
+    maxHp: monster.maxHp,
     state: monster.state,
     intent: monster.intent,
     name: monster.def.name,
@@ -137,13 +178,17 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
       ((monster.state === 'alert' || monster.state === 'chase') &&
         hexDistance(state.player.pos, monster.pos) <= MONSTER_SIGHT),
     targeted: targetedKey === axialKey(monster.pos),
+    spotted: monster.spotted,
   }));
 
   return {
     cells,
     player: state.player.pos,
+    playerHp: state.player.hp,
+    playerMaxHp: state.player.maxHp,
     exit: level.exit,
     status: state.status,
+    seed: state.seed,
     standableNeighbors,
     monsters,
     alertedCount: state.monsters.filter(

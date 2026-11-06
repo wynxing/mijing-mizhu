@@ -1,13 +1,17 @@
 import { LISTEN_PER_TURN } from '../rules/fog/listen';
-import { canListen, movementPointsOf, type ActionCheck } from '../rules/turn/reducer';
+import { canListen, listenLimit, movementPointsOf, type ActionCheck } from '../rules/turn/reducer';
 import type { GameState, LogEntry } from '../rules/turn/types';
 
 export function movementPointsOfView(game: GameState | null): number {
   return game ? movementPointsOf(game) : 0;
 }
 
+export function listenLimitOf(game: GameState | null): number {
+  return game ? listenLimit(game) : LISTEN_PER_TURN;
+}
+
 export function listenRemaining(game: GameState | null): number {
-  return game ? Math.max(0, LISTEN_PER_TURN - game.listenUsed) : 0;
+  return game ? Math.max(0, listenLimit(game) - game.listenUsed) : 0;
 }
 
 export function canListenIn(game: GameState | null): ActionCheck {

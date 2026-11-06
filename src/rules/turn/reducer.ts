@@ -6,10 +6,13 @@ import { LISTEN_MOVEMENT_COST, LISTEN_PER_TURN, resolveListen } from '../fog/lis
 import { addScent, clearScentAround, decayScent } from '../fog/scent';
 import { findDie, movementPoints, reserveDie, rollDice, unreserveDie } from '../dice/dice';
 import { actMonster, rollIntent, updatePerception, type Monster } from '../monsters/brain';
-import { expireAtTurnEnd, mergeBuff, tickBuffs, type Buff } from '../buffs/buffs';
+import { expireAtTurnEnd, mergeBuff, sumBuff, tickBuffs, type Buff } from '../buffs/buffs';
 import { damageDealt, hitPlayer, playerAttack } from '../combat/combat';
+import { TRAP_DAMAGE, debuffDamage, resolveTrap } from '../traps/trap';
 import { cardDef, type CardDef } from '../cards/content';
+import { drawCard } from '../cards/drop';
 import type { GameIntent, GameState, LogEntry } from './types';
+import type { GameEvent } from './events';
 import { createGame } from '../game/createGame';
 
 export interface ActionCheck {
@@ -20,7 +23,7 @@ export interface ActionCheck {
 const OK: ActionCheck = { ok: true, reason: null };
 
 export function movementPointsOf(state: GameState): number {
-  return movementPoints(state.dice, state.spentPoints);
+  return movementPoints(state.dice, state.spentPoints) + sumBuff(state.buffs, 'extraMove');
 }
 
 function pushLog(log: LogEntry[], text: string, turn: number): LogEntry[] {
@@ -29,6 +32,56 @@ function pushLog(log: LogEntry[], text: string, turn: number): LogEntry[] {
 
 function reject(state: GameState, reason: string): GameState {
   return { ...state, notice: reason };
+}
+
+/** 踏入格子后结算陷阱；没有陷阱时原样返回。 */
+function applyTrap(next: GameState, cell: Axial, events: GameEvent[]): GameState {
+  const trapped = resolveTrap(next, cell);
+  if (trapped.events.length === 0) return next;
+  events.push(...trapped.events);
+  const debuffName = trapped.debuff === 'bleed' ? '流血' : '中毒';
+  return {
+    ...trapped.state,
+    status: trapped.state.player.hp <= 0 ? 'lost' : trapped.state.status,
+    log: pushLog(
+      trapped.state.log,
+      `你踩中陷阱，受到 ${TRAP_DAMAGE} 点伤害（${debuffName}）`,
+      trapped.state.turn,
+    ),
+  };
+}
+
+/** 蛛巢布陷阱：每回合最多新增 2 个，不覆盖已有陷阱、玩家脚下、起点与出口。 */
+function mergeLaidTraps(state: GameState, laid: readonly Axial[]): Set<AxialKey> | null {
+  const traps = new Set(state.level.traps);
+  const limit = traps.size + 2;
+  for (const cell of laid) {
+    if (traps.size >= limit) break;
+    const key = axialKey(cell);
+    if (traps.has(key)) continue;
+    if (
+      key === axialKey(state.player.pos) ||
+      key === axialKey(state.level.start) ||
+      key === axialKey(state.level.exit)
+    ) {
+      continue;
+    }
+    if (!isWalkableAtLevel(state.level, cell)) continue;
+    traps.add(key);
+  }
+  return traps.size > state.level.traps.size ? traps : null;
+}
+
+/** 击杀掉落：手牌未满时抽一张并写日志。 */
+function grantCardDrop(state: GameState): GameState {
+  const drop = drawCard(state.hand, state.rngState, state.turn);
+  if (!drop) return state;
+  return {
+    ...state,
+    hand: [...state.hand, drop.card],
+    rngState: drop.rngState,
+    log: pushLog(state.log, `你拾取到「${drop.card.def.name}」`, state.turn),
+  };
 }
 
 export function canMove(state: GameState, target: { q: number; r: number }): ActionCheck {
@@ -129,14 +182,16 @@ export function applyCard(
   cardUid: string,
   dieId: number,
   targetKey?: AxialKey,
-): { state: GameState; error: string | null } {
+): { state: GameState; error: string | null; events: GameEvent[] } {
   const die = findDie(state.dice, dieId);
-  if (!die) return { state, error: '没有这颗骰子' };
-  if (die.reserved) return { state, error: '这颗骰子已经用掉了' };
-  if (die.value < card.cost) return { state, error: `需要一颗不小于 ${card.cost} 点的骰子` };
+  if (!die) return { state, error: '没有这颗骰子', events: [] };
+  if (die.reserved) return { state, error: '这颗骰子已经用掉了', events: [] };
+  if (die.value < card.cost) {
+    return { state, error: `需要一颗不小于 ${card.cost} 点的骰子`, events: [] };
+  }
 
   const { monster, error } = resolveCardTarget(state, card, targetKey);
-  if (error) return { state, error };
+  if (error) return { state, error, events: [] };
 
   let next: GameState = {
     ...state,
@@ -144,10 +199,11 @@ export function applyCard(
     dice: state.dice.map((item) => (item.id === dieId ? { ...item, reserved: true } : item)),
     notice: null,
   };
+  const events: GameEvent[] = [];
 
   switch (card.effect.kind) {
     case 'damage': {
-      if (!monster) return { state, error: '射程内没有目标' };
+      if (!monster) return { state, error: '射程内没有目标', events: [] };
       const amount = damageDealt(card.effect.amount + damageBonus(state.buffs));
       const struck = applyDamageToMonster(next, monster, amount);
       const survived = struck.monsters.some(
@@ -158,18 +214,49 @@ export function applyCard(
         survived && card.effect.knockback > 0
           ? knockback(struck, monster, card.effect.knockback)
           : struck;
+      events.push({
+        type: 'playerAttacked',
+        monsterUid: monster.uid,
+        monsterName: monster.def.name,
+        target: monster.pos,
+        damage: amount,
+        killed: !survived,
+      });
+      if (!survived) {
+        events.push({
+          type: 'monsterDied',
+          monsterUid: monster.uid,
+          monsterName: monster.def.name,
+          at: monster.pos,
+        });
+      } else {
+        const after = pushed.monsters.find((item) => item.uid === monster.uid);
+        if (after && axialKey(after.pos) !== axialKey(monster.pos)) {
+          events.push({
+            type: 'monsterMoved',
+            monsterUid: monster.uid,
+            from: monster.pos,
+            to: after.pos,
+          });
+        }
+      }
       next = {
         ...pushed,
         log: pushLog(pushed.log, `你用「${card.name}」造成 ${amount} 点伤害`, pushed.turn),
       };
+      if (!survived) next = grantCardDrop(next);
       break;
     }
     case 'heal': {
-      const hp = Math.min(state.player.maxHp, state.player.hp + card.effect.amount);
+      const poisoned = next.buffs.some((buff) => buff.kind === 'poison');
+      const amount = poisoned ? Math.floor(card.effect.amount / 2) : card.effect.amount;
+      const hp = Math.min(state.player.maxHp, state.player.hp + amount);
+      const healed = hp - state.player.hp;
+      events.push({ type: 'playerHealed', amount: healed });
       next = {
         ...next,
         player: { ...next.player, hp },
-        log: pushLog(next.log, `你用「${card.name}」回复 ${hp - state.player.hp} 点体力`, next.turn),
+        log: pushLog(next.log, `你用「${card.name}」回复 ${healed} 点体力`, next.turn),
       };
       break;
     }
@@ -181,6 +268,7 @@ export function applyCard(
         turns: card.effect.turns,
         amount: card.effect.amount,
       };
+      events.push({ type: 'playerBuffed', name: card.name });
       next = {
         ...next,
         buffs: mergeBuff(next.buffs, buff),
@@ -189,9 +277,21 @@ export function applyCard(
       break;
     }
     case 'removeDebuff': {
+      const removed = next.buffs.filter(
+        (buff) => buff.kind === 'bleed' || buff.kind === 'poison',
+      );
       next = {
         ...next,
-        log: pushLog(next.log, `你用「${card.name}」清除了负面状态`, next.turn),
+        buffs: next.buffs.filter(
+          (buff) => buff.kind !== 'bleed' && buff.kind !== 'poison',
+        ),
+        log: pushLog(
+          next.log,
+          removed.length > 0
+            ? `你用「${card.name}」清除了${removed.map((buff) => buff.name).join('、')}`
+            : `你用「${card.name}」时没有可清除的负面状态`,
+          next.turn,
+        ),
       };
       break;
     }
@@ -199,7 +299,7 @@ export function applyCard(
       const scent = clearScentAround(next.scent, next.player.pos);
       const monsters = next.monsters.map((item) =>
         areAdjacent(item.pos, next.player.pos) && item.state !== 'wander'
-          ? { ...item, state: 'alert' as const, lastKnown: next.player.pos }
+          ? { ...item, state: 'alert' as const, lastKnown: item.pos }
           : item,
       );
       next = {
@@ -211,12 +311,19 @@ export function applyCard(
       break;
     }
     case 'downgradeMonster': {
-      if (!monster) return { state, error: '目标不存在' };
+      if (!monster) return { state, error: '目标不存在', events: [] };
       next = {
         ...next,
         monsters: next.monsters.map((item) =>
           axialKey(item.pos) === axialKey(monster.pos)
-            ? { ...item, state: 'wander' as const, lastKnown: null }
+            ? {
+                ...item,
+                state: 'wander' as const,
+                lastKnown: null,
+                spotted: false,
+                dazeTurns: 2,
+                intent: { kind: 'search' as const },
+              }
             : item,
         ),
         log: pushLog(next.log, `「${card.name}」让一只怪物失去了方向`, next.turn),
@@ -224,12 +331,12 @@ export function applyCard(
       break;
     }
     case 'freezeMonster': {
-      if (!monster) return { state, error: '目标不存在' };
+      if (!monster) return { state, error: '目标不存在', events: [] };
       next = {
         ...next,
         monsters: next.monsters.map((item) =>
           axialKey(item.pos) === axialKey(monster.pos)
-            ? { ...item, frozen: true }
+            ? { ...item, frozen: true, intent: { kind: 'frozen' as const } }
             : item,
         ),
         log: pushLog(next.log, `「${card.name}」定住了一只怪物`, next.turn),
@@ -261,7 +368,7 @@ export function applyCard(
       break;
   }
 
-  return { state: next, error: null };
+  return { state: next, error: null, events };
 }
 
 function damageBonus(buffs: readonly Buff[]): number {
@@ -312,20 +419,40 @@ function knockback(state: GameState, monster: Monster, cells: number): GameState
 }
 
 /** 玩家回合结束 → 结算：怪物行动 → 感知更新 → 预掷意图 → 气味衰减。 */
-function endTurn(state: GameState): GameState {
+function endTurn(state: GameState): { state: GameState; events: GameEvent[] } {
   const rng = new Rng32(state.rngState);
   const map = { cells: state.level.cells, grid: { width: state.level.width, height: state.level.height } };
 
   let monsters = state.monsters;
   let hp = state.player.hp;
   let log = state.log;
+  const events: GameEvent[] = [];
+  const laidTraps: Axial[] = [];
 
   for (const monster of monsters) {
+    const before = monster.pos;
     const action = actMonster(monster, map, state.player.pos, rng);
     monsters = monsters.map((item) => (item === monster ? action.monster : item));
+    laidTraps.push(...action.traps);
+    if (axialKey(action.monster.pos) !== axialKey(before)) {
+      events.push({
+        type: 'monsterMoved',
+        monsterUid: monster.uid,
+        from: before,
+        to: action.monster.pos,
+      });
+    }
     if (action.damage > 0) {
       const hit = hitPlayer(action.damage, state.buffs);
       hp -= hit.damage;
+      events.push({
+        type: 'monsterAttacked',
+        monsterUid: monster.uid,
+        monsterName: monster.def.name,
+        target: state.player.pos,
+        damage: hit.damage,
+        avoided: hit.dodged || hit.immune,
+      });
       log = pushLog(
         log,
         hit.damage === 0
@@ -337,35 +464,56 @@ function endTurn(state: GameState): GameState {
   }
 
   const stationaryTurns = state.movedThisTurn ? 0 : state.stationaryTurns + 1;
-  monsters = monsters.map((monster) =>
-    rollIntent(
-      updatePerception(monster, state.scent, state.player.pos, stationaryTurns),
-      rng,
+  monsters = monsters.map((monster) => {
+    const perceived = updatePerception(
+      monster,
+      state.scent,
       state.player.pos,
-    ),
-  );
+      stationaryTurns,
+    );
+    // 定身只封锁本回合：感知早退后在此解除，再预掷下一回合意图。
+    const thawed = perceived.frozen ? { ...perceived, frozen: false } : perceived;
+    return rollIntent(thawed, rng, state.player.pos);
+  });
+
+  let level = state.level;
+  const traps = mergeLaidTraps(state, laidTraps);
+  if (traps) {
+    level = { ...state.level, traps };
+    log = pushLog(log, '蛛巢布下了新的陷阱', state.turn);
+  }
+
+  const statusDamage = debuffDamage(state.buffs);
+  if (statusDamage > 0) {
+    hp = Math.max(0, hp - statusDamage);
+    log = pushLog(log, `流血与中毒造成 ${statusDamage} 点伤害`, state.turn);
+  }
 
   const turn = state.turn + 1;
   const buffs = tickBuffs(expireAtTurnEnd(state.buffs));
 
   return {
-    ...state,
-    player: { ...state.player, hp },
-    turn,
-    phase: 'player',
-    status: hp <= 0 ? 'lost' : state.status,
-    dice: rollDice(rng),
-    spentPoints: 0,
-    listenUsed: 0,
-    listenBonus: 0,
-    movedThisTurn: false,
-    stationaryTurns,
-    monsters,
-    buffs,
-    scent: decayScent(state.scent),
-    rngState: rng.state,
-    log: pushLog(log, '回合结束', state.turn),
-    notice: null,
+    state: {
+      ...state,
+      level,
+      player: { ...state.player, hp },
+      turn,
+      phase: 'player',
+      status: hp <= 0 ? 'lost' : state.status,
+      dice: rollDice(rng),
+      spentPoints: 0,
+      listenUsed: 0,
+      listenBonus: 0,
+      movedThisTurn: false,
+      stationaryTurns,
+      monsters,
+      buffs,
+      scent: decayScent(state.scent),
+      rngState: rng.state,
+      log: pushLog(log, '回合结束', state.turn),
+      notice: null,
+    },
+    events,
   };
 }
 
@@ -380,6 +528,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
   }
 
   let next: GameState;
+  let events: GameEvent[] = [];
 
   switch (intent.type) {
     case 'move': {
@@ -396,6 +545,16 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
         const survived = struck.monsters.some(
           (item) => axialKey(item.pos) === axialKey(blocker.pos),
         );
+        events = [
+          {
+            type: 'playerAttacked',
+            monsterUid: blocker.uid,
+            monsterName: blocker.def.name,
+            target,
+            damage: amount,
+            killed: !survived,
+          },
+        ];
         next = {
           ...struck,
           spentPoints: state.spentPoints + 1,
@@ -410,6 +569,13 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
           notice: null,
         };
         if (!survived) {
+          events.push({
+            type: 'monsterDied',
+            monsterUid: blocker.uid,
+            monsterName: blocker.def.name,
+            at: target,
+          });
+          events.push({ type: 'playerMoved', from: state.player.pos, to: target });
           next = {
             ...next,
             player: { ...next.player, pos: target },
@@ -420,10 +586,13 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
               ? pushLog(next.log, '你找到了出口', next.turn)
               : next.log,
           };
+          next = grantCardDrop(next);
+          next = applyTrap(next, target, events);
         }
         break;
       }
 
+      events = [{ type: 'playerMoved', from: state.player.pos, to: target }];
       next = {
         ...state,
         player: { ...state.player, pos: target },
@@ -439,6 +608,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
         ),
         notice: null,
       };
+      next = applyTrap(next, target, events);
       break;
     }
 
@@ -468,6 +638,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
       const result = applyCard(state, held.def, held.uid, intent.dieId, intent.targetKey);
       if (result.error) return reject(state, result.error);
       next = result.state;
+      events = result.events;
       break;
     }
 
@@ -498,7 +669,9 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
 
     case 'endTurn': {
       if (state.phase !== 'player') return reject(state, '当前不在玩家回合');
-      next = endTurn(state);
+      const ended = endTurn(state);
+      next = ended.state;
+      events = ended.events;
       break;
     }
 
@@ -509,10 +682,12 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
 
   // 真正无路可走时自动结束回合；存在预留骰子时不触发，取消预留始终可用。
   if (next.status === 'playing' && !hasLegalAction(next)) {
-    next = endTurn(next);
+    const ended = endTurn(next);
+    next = ended.state;
+    events = [...events, ...ended.events];
   }
 
-  return next;
+  return { ...next, events };
 }
 
 export { cardDef };
