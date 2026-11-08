@@ -76,8 +76,8 @@ export const BROOD: MonsterDef = {
 export const GUARDIAN: MonsterDef = {
   id: 'guardian',
   name: '守卫',
-  hp: 200,
-  damage: 12,
+  hp: 100,
+  damage: 8,
   senseRadius: 99,
   move: { kind: 'dice', sides: 6 },
   ignoresWalls: false,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createGame } from '../game/createGame';
+import { cardDef } from '../cards/content';
 import { levelAsCellGrid } from '../generation/generator';
 import { findPath } from '../grid/path';
 import { areAdjacent, neighbors, offsetToAxial } from '../grid/geometry';
@@ -260,3 +261,83 @@ describe('纯度与确定性', () => {
     expect(hashGame(a)).not.toBe(hashGame(b));
   });
 });
+
+describe('近战与骰子经济（阶段 2 修正）', () => {
+  it('近战每回合最多 1 次，结束回合后重置', () => {
+    const base = createGame(3);
+    const guardian = base.monsters.find((monster) => monster.def.id === 'guardian')!;
+    const adjacent = neighbors(guardian.pos).find(
+      (cell) =>
+        isFloorAt(base, cell) &&
+        !base.monsters.some((monster) => monster.pos.q === cell.q && monster.pos.r === cell.r),
+    )!;
+    const prepared: GameState = {
+      ...base,
+      player: { ...base.player, pos: adjacent },
+      monsters: [guardian],
+      dice: diceWith([6, 6, 6]),
+    };
+
+    const first = reduceGame(prepared, { type: 'move', target: guardian.pos });
+    expect(first.notice).toBeNull();
+    expect(first.meleeUsed).toBe(true);
+    expect(first.spentPoints).toBe(1);
+
+    const second = reduceGame(first, { type: 'move', target: guardian.pos });
+    expect(second.notice).toBe('本回合已经近战过了');
+    expect(second.spentPoints).toBe(1);
+
+    const nextTurn = reduceGame(first, { type: 'endTurn' });
+    expect(nextTurn.meleeUsed).toBe(false);
+  });
+
+  it('移动点走完后不能再锁骰出牌', () => {
+    const base = createGame(12);
+    const card = { uid: 'strike-test', def: cardDef('strike') };
+    const drained: GameState = {
+      ...base,
+      dice: diceWith([6, 6, 6]),
+      spentPoints: 18,
+      hand: [card, ...base.hand],
+    };
+    expect(movementPointsOf(drained)).toBe(0);
+
+    const played = reduceGame(drained, {
+      type: 'playCard',
+      cardUid: card.uid,
+      dieId: 0,
+    });
+    expect(played.notice).toBe('这颗骰子的点数已经被移动花掉了');
+    expect(played.hand.some((item) => item.uid === card.uid)).toBe(true);
+
+    const reserved = reduceGame(drained, { type: 'reserveDie', dieId: 0 });
+    expect(reserved.notice).toBe('这颗骰子的点数已经被移动花掉了');
+    expect(reserved.dice[0].reserved).toBe(false);
+  });
+
+  it('点数还够时可以照常出牌', () => {
+    const base = createGame(12);
+    const card = { uid: 'strike-test', def: cardDef('strike') };
+    const ready: GameState = {
+      ...base,
+      dice: diceWith([6, 4, 2]),
+      spentPoints: 2,
+      hand: [card, ...base.hand],
+      monsters: [],
+    };
+    const played = reduceGame(ready, {
+      type: 'playCard',
+      cardUid: card.uid,
+      dieId: 2,
+      targetKey: undefined,
+    });
+    // 挥击需要相邻目标；没有怪物时应停在目标错误，而不是被点数规则拦下
+    expect(played.notice).toBe('射程内没有目标');
+  });
+});
+
+function isFloorAt(state: GameState, cell: { q: number; r: number }): boolean {
+  const { col, row } = { col: cell.q + (cell.r - (cell.r & 1)) / 2, row: cell.r };
+  if (col < 0 || row < 0 || col >= state.level.width || row >= state.level.height) return false;
+  return state.level.cells[row * state.level.width + col] === 0;
+}

@@ -10,6 +10,7 @@ attribute float aKind;
 attribute float aTone;
 attribute float aCliffMask;
 attribute float aTerrain;
+attribute float aRoom;
 attribute float aDir;
 attribute float aShade;
 
@@ -20,6 +21,7 @@ varying vec3 vNormalW;
 varying float vTone;
 varying float vKind;
 varying float vTerrain;
+varying float vRoom;
 varying float vShade;
 
 void main() {
@@ -34,6 +36,7 @@ void main() {
   vTone = aTone;
   vKind = aKind;
   vTerrain = aTerrain;
+  vRoom = aRoom;
   vShade = aShade;
   gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
 }
@@ -55,7 +58,21 @@ varying vec3 vNormalW;
 varying float vTone;
 varying float vKind;
 varying float vTerrain;
+varying float vRoom;
 varying float vShade;
+
+/** 房型染色：低强度色偏，让「我进房间了」可感知（视觉规格 v2.0）。 */
+vec3 roomTint(vec3 alb) {
+  vec3 tint = vec3(1.0);
+  if (vRoom > 0.5 && vRoom < 1.5) tint = vec3(1.02, 1.02, 0.98);
+  else if (vRoom >= 1.5 && vRoom < 2.5) tint = vec3(1.10, 1.00, 0.80);
+  else if (vRoom >= 2.5 && vRoom < 3.5) tint = vec3(0.80, 0.98, 1.10);
+  else if (vRoom >= 3.5 && vRoom < 4.5) tint = vec3(1.12, 1.02, 0.78);
+  else if (vRoom >= 4.5 && vRoom < 5.5) tint = vec3(0.84, 1.10, 0.90);
+  else if (vRoom >= 5.5 && vRoom < 6.5) tint = vec3(1.14, 0.82, 0.78);
+  else if (vRoom >= 6.5) tint = vec3(0.98, 0.84, 1.10);
+  return alb * mix(vec3(1.0), tint, 0.55);
+}
 
 /** 特殊地形：靠实例属性换程序化纹理，不新增 cell 值（§5.3）。 */
 vec3 terrainColor(vec3 alb, vec2 logical) {
@@ -85,7 +102,7 @@ void main() {
 
   vec2 uv = vLogical / uTile;
   vec3 alb = texture2D(uAlbedo, uv).rgb * mix(0.92, 1.08, vTone);
-  alb = terrainColor(alb, vLogical);
+  alb = roomTint(terrainColor(alb, vLogical));
   vec3 bump = texture2D(uNormalMap, uv).xyz * 2.0 - 1.0;
   vec3 n = normalize(vNormalW + vec3(bump.x, 0.0, bump.y) * 0.35);
   float diff = max(dot(n, normalize(uLightDir)), 0.0);

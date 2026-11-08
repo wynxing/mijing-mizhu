@@ -5,7 +5,7 @@ import { reduceGame, movementPointsOf, listenLimit } from '../turn/reducer';
 import { LISTEN_PER_TURN } from '../fog/listen';
 import { axialKey, neighbor, offsetToAxial, type AxialKey } from '../grid/geometry';
 import { CARDS, STARTING_HAND, cardDef } from './content';
-import { hitPlayer, damageDealt, playerAttack } from '../combat/combat';
+import { PLAYER_BASE_ATTACK, hitPlayer, damageDealt, playerAttack } from '../combat/combat';
 import { addBuff, type Buff } from '../buffs/buffs';
 
 function stateWithCard(cardId: string, dieValue = 6) {
@@ -70,7 +70,7 @@ describe('出牌', () => {
     const state = stateWithCard('battlecry');
     const next = reduceGame(state, { type: 'playCard', cardUid: 'battlecry-0', dieId: 0 });
     expect(next.buffs.some((buff) => buff.kind === 'damageBonus')).toBe(true);
-    expect(playerAttack(next.buffs)).toBe(7);
+    expect(playerAttack(next.buffs)).toBe(PLAYER_BASE_ATTACK + 2);
   });
 
   it('探查术增加本回合探听次数', () => {

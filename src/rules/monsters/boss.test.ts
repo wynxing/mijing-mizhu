@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { Rng32 } from '../../core/rng';
 import { axialKey, neighbor } from '../grid/geometry';
 import { createGame } from '../game/createGame';
-import { advanceBossPhase, createMonster, rollIntent, updatePerception } from './brain';
+import {
+  BOSS_AOE_DAMAGE,
+  BOSS_AOE_RADIUS,
+  BOSS_PHASE_HEAL,
+  advanceBossPhase,
+  createMonster,
+  rollIntent,
+  updatePerception,
+} from './brain';
 import { monsterDef } from './content';
 import { reduceGame } from '../turn/reducer';
 import type { GameState } from '../turn/types';
@@ -42,15 +50,16 @@ describe('守卫三阶段', () => {
     const base = createMonster(monsterDef('guardian'), { q: 0, r: 0 }, 'g');
     const awake = { ...base, bossPhase: 1 as const, state: 'chase' as const };
 
-    const phase2 = advanceBossPhase({ ...awake, hp: 130 });
+    const maxHp = base.maxHp;
+    const phase2 = advanceBossPhase({ ...awake, hp: Math.floor(maxHp * 0.6) });
     expect(phase2.bossPhase).toBe(2);
-    expect(phase2.hp).toBe(160); // 回 30，不超过 maxHp
+    expect(phase2.hp).toBe(Math.min(maxHp, Math.floor(maxHp * 0.6) + BOSS_PHASE_HEAL));
 
-    const phase3 = advanceBossPhase({ ...awake, hp: 60 });
+    const phase3 = advanceBossPhase({ ...awake, hp: Math.floor(maxHp * 0.3) });
     expect(phase3.bossPhase).toBe(3);
 
     // 回血后仍停在阶段 2，不降级
-    const stays = advanceBossPhase({ ...awake, bossPhase: 2 as const, hp: 170 });
+    const stays = advanceBossPhase({ ...awake, bossPhase: 2 as const, hp: Math.floor(maxHp * 0.9) });
     expect(stays.bossPhase).toBe(2);
 
     // 未激活的守卫不因扣血自动跳阶段（由被攻击唤醒为阶段 1）
@@ -58,21 +67,27 @@ describe('守卫三阶段', () => {
     expect(dormant.bossPhase).toBe(0);
   });
 
-  it('阶段 3 的意图是半径 2 / 18 伤的 AOE', () => {
+  it('阶段 3 的意图是固定半径与伤害的 AOE', () => {
     const base = createMonster(monsterDef('guardian'), { q: 0, r: 0 }, 'g');
     const phase3 = { ...base, bossPhase: 3 as const, state: 'chase' as const };
     const rolled = rollIntent(phase3, new Rng32(1), { q: 2, r: 0 });
-    expect(rolled.intent).toEqual({ kind: 'aoe', radius: 2, damage: 18 });
+    expect(rolled.intent).toEqual({
+      kind: 'aoe',
+      radius: BOSS_AOE_RADIUS,
+      damage: BOSS_AOE_DAMAGE,
+    });
   });
 
   it('进入阶段 2 的回合一次性召唤 2 只嗅犬并回血，之后不再召唤', () => {
-    const state = setBoss(createGame(3), 1, 120);
+    const base = createGame(3);
+    const lowHp = Math.floor(guardianAt(base).monster.maxHp * 0.6);
+    const state = setBoss(base, 1, lowHp);
     const before = guardianAt(state).monster;
     const after = reduceGame(state, { type: 'endTurn' });
     const { monster: boss } = guardianAt(after);
 
     expect(boss.bossPhase).toBe(2);
-    expect(boss.hp).toBe(Math.min(boss.maxHp, 120 + 30));
+    expect(boss.hp).toBe(Math.min(boss.maxHp, lowHp + BOSS_PHASE_HEAL));
     expect(boss.summoned).toBe(true);
     expect(after.monsters.length).toBe(state.monsters.length + 2);
     expect(after.monsters.filter((m) => m.uid.includes('-summon-'))).toHaveLength(2);

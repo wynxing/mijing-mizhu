@@ -315,11 +315,14 @@ function nextIntent(state: GameState, policy: Policy, route: RouteCache): GameIn
   if (movementPointsOf(state) < 1) return null;
 
   if (policy === 'fight' || policy === 'explore') {
-    const adjacent = state.monsters.find(
-      (monster) =>
-        hexDistance(state.player.pos, monster.pos) <= 1 &&
-        (policy === 'fight' || seen(state, monster)),
-    );
+    // 近战每回合限 1 次（§6.5），用完就不再往怪格里撞。
+    const adjacent = state.meleeUsed
+      ? undefined
+      : state.monsters.find(
+          (monster) =>
+            hexDistance(state.player.pos, monster.pos) <= 1 &&
+            (policy === 'fight' || seen(state, monster)),
+        );
     if (adjacent) return { type: 'move', target: adjacent.pos };
   }
 

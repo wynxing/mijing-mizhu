@@ -1,5 +1,6 @@
-import { axialToOffset, type Axial } from '../grid/geometry';
-import type { Level, Room, RoomKind } from '../generation/generator';
+import { axialKey, axialToOffset, offsetToAxial, type Axial } from '../grid/geometry';
+import { isWalkableAtLevel, type Level, type Room, type RoomKind } from '../generation/generator';
+import type { FogState } from '../fog/fog';
 import type { ActionCheck } from '../turn/reducer';
 import type { GameState } from '../turn/types';
 
@@ -15,6 +16,21 @@ export function roomIndexAt(level: Level, cell: Axial): number {
 export function roomAt(level: Level, cell: Axial): Room | null {
   const index = roomIndexAt(level, cell);
   return index < 0 ? null : level.rooms[index];
+}
+
+/** 进入房间即整间揭露（§5.1 房间例外）：把房体内所有可走格标为已踏足。 */
+export function revealRoom(level: Level, roomIndex: number, fog: FogState): FogState {
+  if (roomIndex < 0) return fog;
+  const room = level.rooms[roomIndex];
+  const visited = new Set(fog.visited);
+  for (let row = room.row; row < room.row + room.h; row++) {
+    for (let col = room.col; col < room.col + room.w; col++) {
+      const cell = offsetToAxial(col, row);
+      if (!isWalkableAtLevel(level, cell)) continue;
+      visited.add(axialKey(cell));
+    }
+  }
+  return { visited, known: fog.known };
 }
 
 /** 阶段 2 可交互的房间：宝箱、休整与奇遇。 */

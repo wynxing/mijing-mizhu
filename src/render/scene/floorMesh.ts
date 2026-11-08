@@ -80,6 +80,7 @@ function buildPrismGeometry(): BufferGeometry {
   geo.setAttribute('aTone', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
   geo.setAttribute('aCliffMask', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
   geo.setAttribute('aTerrain', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
+  geo.setAttribute('aRoom', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
   return geo;
 }
 
@@ -120,6 +121,7 @@ export class FloorMesh {
     const tone = this.geometry.getAttribute('aTone') as InstancedBufferAttribute;
     const mask = this.geometry.getAttribute('aCliffMask') as InstancedBufferAttribute;
     const terrain = this.geometry.getAttribute('aTerrain') as InstancedBufferAttribute;
+    const room = this.geometry.getAttribute('aRoom') as InstancedBufferAttribute;
 
     const count = Math.min(plan.floors.length, FLOOR_CAPACITY);
     for (let i = 0; i < count; i += 1) {
@@ -132,6 +134,7 @@ export class FloorMesh {
       tone.setX(i, f.tone);
       mask.setX(i, f.cliffMask);
       terrain.setX(i, f.terrain);
+      room.setX(i, f.room);
     }
     this.mesh.count = count;
     this.mesh.instanceMatrix.needsUpdate = true;
@@ -140,6 +143,7 @@ export class FloorMesh {
     tone.needsUpdate = true;
     mask.needsUpdate = true;
     terrain.needsUpdate = true;
+    room.needsUpdate = true;
   }
 
   setLantern(playerLogical: { x: number; y: number }): void {

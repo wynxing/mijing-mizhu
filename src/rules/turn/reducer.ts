@@ -27,7 +27,7 @@ import { damageDealt, hitPlayer, playerAttack } from '../combat/combat';
 import { TRAP_DAMAGE, debuffDamage, resolveTrap } from '../traps/trap';
 import { cardDef, type CardDef } from '../cards/content';
 import { drawCard } from '../cards/drop';
-import { canAnswerEncounter, canInteract, roomIndexAt } from '../rooms/rooms';
+import { canAnswerEncounter, canInteract, revealRoom, roomIndexAt, roomKindLabel } from '../rooms/rooms';
 import { pickQuestion, settleAnswer, useHint } from '../encounter/encounter';
 import { sanitizeQuestions } from '../encounter/questions';
 import type { GameIntent, GameState, LogEntry } from './types';
@@ -109,6 +109,23 @@ function triggerBattleRoom(next: GameState, cell: Axial): GameState {
     ...next,
     monsters,
     log: pushLog(next.log, '战斗房的怪物扑了上来', next.turn),
+  };
+}
+
+/** 房间例外（§5.1）：踏进房体即整间揭露，首次进入给一行日志。 */
+function applyRoomEntry(next: GameState, from: Axial, cell: Axial): GameState {
+  const roomIndex = roomIndexAt(next.level, cell);
+  if (roomIndex < 0) return next;
+  const fog = revealRoom(next.level, roomIndex, next.fog);
+  if (roomIndexAt(next.level, from) === roomIndex) return { ...next, fog };
+  return {
+    ...next,
+    fog,
+    log: pushLog(
+      next.log,
+      `你走进了${roomKindLabel(next.level.rooms[roomIndex].kind)}`,
+      next.turn,
+    ),
   };
 }
 
@@ -270,7 +287,8 @@ export function canMove(state: GameState, target: { q: number; r: number }): Act
     if (!isWalkableAtLevel(state.level, target)) return { ok: false, reason: '该方向有墙' };
     return OK;
   }
-  // 近战：消耗 1 移动点造成基础攻击力伤害
+  // 近战：消耗 1 移动点造成基础攻击力伤害，每回合最多 1 次（§6.5）
+  if (state.meleeUsed) return { ok: false, reason: '本回合已经近战过了' };
   return OK;
 }
 
@@ -373,6 +391,10 @@ export function applyCard(
   if (die.reserved) return { state, error: '这颗骰子已经用掉了', events: [] };
   if (die.value < card.cost) {
     return { state, error: `需要一颗不小于 ${card.cost} 点的骰子`, events: [] };
+  }
+  // 投入骰子等价于花掉它的面值：已经被移动花掉的点不能重复使用（§3.2）。
+  if (movementPointsOf(state) < die.value) {
+    return { state, error: '这颗骰子的点数已经被移动花掉了', events: [] };
   }
 
   const { monster, error } = resolveCardTarget(state, card, targetKey);
@@ -768,6 +790,7 @@ function endTurn(state: GameState): { state: GameState; events: GameEvent[] } {
       listenUsed: 0,
       listenBonus: 0,
       movedThisTurn: false,
+      meleeUsed: false,
       stationaryTurns,
       monsters,
       buffs,
@@ -821,6 +844,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
         next = {
           ...struck,
           spentPoints: state.spentPoints + 1,
+          meleeUsed: true,
           status: reachedExit && !survived && !hasGuardian(struck) ? 'won' : state.status,
           log: pushLog(
             state.log,
@@ -854,6 +878,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
               : next.log,
           };
           next = grantCardDrop(next);
+          next = applyRoomEntry(next, state.player.pos, target);
           next = applyTerrain(next, target);
           next = applyTrap(next, target, events);
           next = triggerBattleRoom(next, target);
@@ -881,6 +906,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
         ),
         notice: null,
       };
+      next = applyRoomEntry(next, state.player.pos, target);
       next = applyTerrain(next, target);
       next = applyTrap(next, target, events);
       next = triggerBattleRoom(next, target);
@@ -958,6 +984,9 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
       const die = findDie(state.dice, intent.dieId);
       if (!die) return reject(state, '没有这颗骰子');
       if (die.reserved) return reject(state, '这颗骰子已经预留');
+      if (movementPointsOf(state) < die.value) {
+        return reject(state, '这颗骰子的点数已经被移动花掉了');
+      }
       // 预留只是把骰子移出移动点池，未预留面值之和自然减少，无需另记花费。
       next = {
         ...state,

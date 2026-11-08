@@ -98,6 +98,31 @@ test('走进宝箱房 / 休整房并用 E 键结算一次', async ({ page }) => 
   const reached = await walkTo(page, 'room');
   expect(reached.ok, reached.reason ?? '').toBe(true);
 
+  // 房间例外：踏入房体后整间可见
+  const revealed = await page.evaluate(async () => {
+    const geometryPath = '/src/rules/grid/geometry.ts';
+    const generatorPath = '/src/rules/generation/generator.ts';
+    const roomsPath = '/src/rules/rooms/rooms.ts';
+    const { axialKey, offsetToAxial } = (await import(geometryPath)) as any;
+    const { cellAtLevel } = (await import(generatorPath)) as any;
+    const game = (window as unknown as Record<string, any>).__mijing.store.getState().game;
+    const { roomIndexAt } = (await import(roomsPath)) as any;
+    const index = roomIndexAt(game.level, game.player.pos);
+    if (index < 0) return { index, missing: 1 };
+    const room = game.level.rooms[index];
+    let missing = 0;
+    for (let row = room.row; row < room.row + room.h; row++) {
+      for (let col = room.col; col < room.col + room.w; col++) {
+        const cell = offsetToAxial(col, row);
+        if (cellAtLevel(game.level, cell) !== 0) continue;
+        if (!game.fog.visited.has(axialKey(cell))) missing++;
+      }
+    }
+    return { index, missing };
+  });
+  expect(revealed.index).toBeGreaterThanOrEqual(0);
+  expect(revealed.missing).toBe(0);
+
   const button = page.getByTestId('interact');
   await expect(button).toBeVisible();
   await expect(button).toBeEnabled();

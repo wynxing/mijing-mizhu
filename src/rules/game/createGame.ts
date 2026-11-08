@@ -46,6 +46,7 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
     monsters,
     buffs: [],
     movedThisTurn: false,
+    meleeUsed: false,
     stationaryTurns: 0,
     log: [{ text: '你踏入漆黑的迷宫', turn: 1 }],
     notice: null,

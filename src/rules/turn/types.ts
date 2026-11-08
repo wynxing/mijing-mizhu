@@ -77,6 +77,8 @@ export interface GameState {
   buffs: Buff[];
   /** 本回合有没有移动过（静止是甩开追击的关键）。 */
   movedThisTurn: boolean;
+  /** 本回合是否已经近战过（每回合最多 1 次，§6.5）。 */
+  meleeUsed: boolean;
   /** 连续未移动的回合数。 */
   stationaryTurns: number;
   log: LogEntry[];

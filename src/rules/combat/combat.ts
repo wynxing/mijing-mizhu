@@ -1,7 +1,7 @@
 import { hasBuff, sumBuff, type Buff } from '../buffs/buffs';
 
 /** 玩家基础攻击力（设计文档 §6.5）：卡牌打空时仍可徒手攻击。 */
-export const PLAYER_BASE_ATTACK = 5;
+export const PLAYER_BASE_ATTACK = 8;
 
 export interface PlayerHit {
   /** 实际扣血。 */

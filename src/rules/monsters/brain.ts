@@ -82,9 +82,9 @@ export function moveStepsFor(def: MonsterDef, rng: Rng32): number {
 
 /** 守卫阶段 3 的爆发参数（§6.4）。 */
 export const BOSS_AOE_RADIUS = 2;
-export const BOSS_AOE_DAMAGE = 18;
+export const BOSS_AOE_DAMAGE = 12;
 /** 进入阶段 2 时的自愈量。 */
-export const BOSS_PHASE_HEAL = 30;
+export const BOSS_PHASE_HEAL = 15;
 
 const isGuardian = (monster: Monster): boolean => monster.def.id === 'guardian';
 

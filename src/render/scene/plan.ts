@@ -7,7 +7,7 @@ import {
   type Point,
 } from '../../rules/grid/geometry';
 import type { MonsterIntent, MonsterState } from '../../rules/monsters/brain';
-import type { TerrainKind } from '../../rules/generation/generator';
+import type { RoomKind, TerrainKind } from '../../rules/generation/generator';
 import type { RenderModel } from '../model';
 import type {
   PresentationFlash,
@@ -36,6 +36,8 @@ export const LANTERN_OUTER = LANTERN_RADIUS * 6.5;
 export type FloorKind = 0 | 1;
 /** 特殊地形实例值：0 = 无，与 FloorInstance.kind 一样走数值属性。 */
 export type FloorTerrain = 0 | 1 | 2 | 3;
+/** 房型染色实例值：0 = 不在房间内。 */
+export type FloorRoom = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7;
 
 export interface FloorInstance {
   /** 格心的逻辑坐标。 */
@@ -47,6 +49,8 @@ export interface FloorInstance {
   cliffMask: number;
   /** 特殊地形：0 无 / 1 乱石 / 2 水渍 / 3 风口。着色器据此换程序化纹理（§5.3）。 */
   terrain: FloorTerrain;
+  /** 房型染色：0 无 / 1 起点 / 2 出口 / 3 奇遇 / 4 宝箱 / 5 休整 / 6 战斗 / 7 陷阱。 */
+  room: FloorRoom;
 }
 
 export interface WallRidge {
@@ -155,6 +159,20 @@ function terrainIndex(kind: TerrainKind | null): FloorTerrain {
   return kind === null ? 0 : TERRAIN_INDEX[kind];
 }
 
+const ROOM_INDEX: Record<RoomKind, FloorRoom> = {
+  start: 1,
+  exit: 2,
+  encounter: 3,
+  chest: 4,
+  rest: 5,
+  battle: 6,
+  trap: 7,
+};
+
+function roomIndex(kind: RoomKind | null): FloorRoom {
+  return kind === null ? 0 : ROOM_INDEX[kind];
+}
+
 export function buildScenePlan(model: RenderModel, frame?: PresentationFrame): ScenePlan {
   const playerLogical = frame?.player.pos ?? axialToPixel(model.player, BASE_HEX_SIZE);
 
@@ -170,7 +188,7 @@ export function buildScenePlan(model: RenderModel, frame?: PresentationFrame): S
     const logical = axialToPixel(axial, BASE_HEX_SIZE);
 
     if (appearance.kind === 'heardPassage') {
-      floors.push({ logical, kind: 1, tone: hash01(key), cliffMask: 0, terrain: 0 });
+      floors.push({ logical, kind: 1, tone: hash01(key), cliffMask: 0, terrain: 0, room: 0 });
       heardOutlines.push({ logical, noisy: appearance.result === 'passage_noisy' });
       continue;
     }
@@ -182,6 +200,7 @@ export function buildScenePlan(model: RenderModel, frame?: PresentationFrame): S
       tone: hash01(key),
       cliffMask: cliffMaskOf(cell.views),
       terrain: terrainIndex(cell.terrain),
+      room: roomIndex(cell.roomKind),
     });
 
     // 墙脊：贴在与墙格共享的边上，每条边只放一次

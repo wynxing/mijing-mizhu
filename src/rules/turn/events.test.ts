@@ -38,7 +38,7 @@ describe('事件流', () => {
     const next = reduceGame(withMonster, { type: 'move', target });
     const attack = next.events.find((event) => event.type === 'playerAttacked') as GameEvent;
     expect(attack).toBeDefined();
-    expect(attack).toMatchObject({ monsterUid: 'm1', damage: 5, killed: false });
+    expect(attack).toMatchObject({ monsterUid: 'm1', damage: 8, killed: false });
     expect(next.events.some((event) => event.type === 'playerMoved')).toBe(false);
   });
 

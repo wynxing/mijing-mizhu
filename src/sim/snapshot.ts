@@ -62,6 +62,7 @@ export function snapshotGame(state: GameState): string {
     `listened=${state.listenUsed}`,
     `listenBonus=${state.listenBonus}`,
     `moved=${state.movedThisTurn ? 1 : 0}`,
+    `melee=${state.meleeUsed ? 1 : 0}`,
     `stationary=${state.stationaryTurns}`,
     `pos=${state.player.pos.q},${state.player.pos.r}`,
     `hp=${state.player.hp}/${state.player.maxHp}`,

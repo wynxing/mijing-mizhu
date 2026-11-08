@@ -181,6 +181,11 @@ test('场景：走出一条记忆轨迹，提灯区亮于记忆区，未探索�
 });
 
 test('奇遇门冷光与画面亮度：门在未探索区发光，画面非黑', async ({ page }) => {
+  const consoleErrors: string[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text());
+  });
+  page.on('pageerror', (error) => consoleErrors.push(error.message));
   await page.addInitScript(() => {
     localStorage.setItem('mijing.lastSeed', '42');
   });
@@ -210,4 +215,6 @@ test('奇遇门冷光与画面亮度：门在未探索区发光，画面非黑',
   expect(result.glowInstances).toBe(3);
   expect(result.unexplored).toBeGreaterThan(0);
   expect(result.lit).toBeGreaterThan(500);
+  // 着色器编译失败不会让画面全黑（墙脊仍在），必须显式拦住。
+  expect(consoleErrors).toEqual([]);
 });

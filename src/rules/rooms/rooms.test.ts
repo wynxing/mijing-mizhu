@@ -174,3 +174,56 @@ describe('战斗房', () => {
     throw new Error('找不到可用于战斗房测试的布局');
   });
 });
+
+describe('房间揭露（§5.1 房间例外）', () => {
+  it('踏进房体后整间可走格可见，房外仍是迷雾', () => {
+    for (let seed = 1; seed < 200; seed++) {
+      const base = createGame(seed);
+      const roomIndex = base.level.rooms.findIndex((room) => room.kind === 'chest');
+      if (roomIndex < 0) continue;
+      const room = base.level.rooms[roomIndex];
+      const inside: Axial[] = [];
+      for (let row = room.row; row < room.row + room.h; row++) {
+        for (let col = room.col; col < room.col + room.w; col++) {
+          const cell = offsetToAxial(col, row);
+          if (cellAtLevel(base.level, cell) === CELL_FLOOR) inside.push(cell);
+        }
+      }
+      const entry = inside
+        .flatMap((target) =>
+          DIRECTIONS.map((delta) => ({
+            target,
+            from: { q: target.q + delta.q, r: target.r + delta.r },
+          })),
+        )
+        .find(
+          ({ from }) =>
+            cellAtLevel(base.level, from) === CELL_FLOOR &&
+            roomIndexAt(base.level, from) !== roomIndex &&
+            !base.monsters.some((monster) => axialKey(monster.pos) === axialKey(from)) &&
+            !base.monsters.some((monster) => axialKey(monster.pos) === axialKey({ q: from.q, r: from.r })),
+        );
+      if (!entry) continue;
+
+      const prepared: GameState = { ...base, player: { ...base.player, pos: entry.from } };
+      const after = reduceGame(prepared, { type: 'move', target: entry.target });
+      if (after.notice !== null) continue;
+
+      for (const cell of inside) {
+        expect(after.fog.visited.has(axialKey(cell))).toBe(true);
+      }
+      // 房外的其他地面格不该被顺带揭露（起点是开局就可见的，单独排除）
+      const outside = offsetToAxial(1, 1);
+      if (
+        cellAtLevel(base.level, outside) === CELL_FLOOR &&
+        roomIndexAt(base.level, outside) < 0 &&
+        axialKey(outside) !== axialKey(base.level.start)
+      ) {
+        expect(after.fog.visited.has(axialKey(outside))).toBe(false);
+      }
+      expect(after.log.some((log) => log.text.includes('你走进了'))).toBe(true);
+      return;
+    }
+    throw new Error('找不到可踏入的宝箱房');
+  });
+});
