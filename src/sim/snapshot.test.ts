@@ -38,6 +38,10 @@ describe('快照与哈希', () => {
   });
 
   it('关卡校验和随种子变化', () => {
-    expect(levelHash(createGame(1).level)).not.toBe(levelHash(createGame(2).level));
+    // 校验失败会重试到 seed + attempt，相邻种子可能收敛到同一张图（如 1 与 2 都落到 2）。
+    const a = createGame(100).level;
+    const b = createGame(1000).level;
+    expect(a.seed).not.toBe(b.seed);
+    expect(levelHash(a)).not.toBe(levelHash(b));
   });
 });

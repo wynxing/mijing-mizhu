@@ -16,7 +16,7 @@ import { paletteColor } from './textures';
 /** 边脊：高到能夹住通道，仍低于 sprite 头顶，避免遮挡怪物。 */
 const WALL_HEIGHT = BASE_HEX_SIZE * 0.32;
 const WALL_THICKNESS = BASE_HEX_SIZE * 0.18;
-const WALL_CAPACITY = 4096;
+export const WALL_CAPACITY = 4096;
 
 export class WallMesh {
   readonly mesh: InstancedMesh;

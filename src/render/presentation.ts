@@ -472,6 +472,60 @@ export class PresentationDirector {
         return cursor + DUR.flash;
       }
 
+      case 'bossPhase': {
+        const at = this.currentPos(event.monsterUid);
+        const info = this.units.get(event.monsterUid);
+        if (info?.visible) {
+          this.flashes.push({ pos: at, start: cursor, life: DUR.flash * 1.8, strength: 1.2 });
+          this.floaters.push({
+            pos: at,
+            text: `阶段 ${event.phase}`,
+            tone: 'buff',
+            start: cursor,
+            life: DUR.floater,
+          });
+          this.shakes.push({ power: 4, start: cursor, life: 300 });
+        }
+        return cursor + DUR.flash * 0.6;
+      }
+
+      case 'monsterSummoned': {
+        const at = world(event.at);
+        this.flashes.push({ pos: at, start: cursor, life: DUR.flash, strength: 0.9 });
+        this.floaters.push({
+          pos: at,
+          text: event.monsterName,
+          tone: 'buff',
+          start: cursor,
+          life: DUR.floater,
+        });
+        return cursor + DUR.flash * 0.6;
+      }
+
+      case 'bossAoE': {
+        // AOE 的伤害数字由这里统一报，不再有 monsterAttacked 的重复飘字。
+        const at = world(event.at);
+        this.flashes.push({ pos: at, start: cursor, life: DUR.flash * 2, strength: 1.5 });
+        this.floaters.push({
+          pos: at,
+          text: event.damage > 0 ? `-${event.damage}` : '躲开',
+          tone: event.damage > 0 ? 'damage' : 'block',
+          start: cursor,
+          life: DUR.floater,
+        });
+        this.hits.set(PLAYER, cursor);
+        this.shakes.push({ power: event.damage > 0 ? 7 : 2, start: cursor, life: 320 });
+        if (event.damage > 0) {
+          this.pushNum(
+            'hp:player',
+            this.currentNum('hp:player') - event.damage,
+            cursor,
+            cursor + DUR.hp,
+          );
+        }
+        return cursor + DUR.flash;
+      }
+
       default:
         return cursor;
     }

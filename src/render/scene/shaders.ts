@@ -9,6 +9,7 @@ attribute vec2 aLogical;
 attribute float aKind;
 attribute float aTone;
 attribute float aCliffMask;
+attribute float aTerrain;
 attribute float aDir;
 attribute float aShade;
 
@@ -18,6 +19,7 @@ varying vec2 vLogical;
 varying vec3 vNormalW;
 varying float vTone;
 varying float vKind;
+varying float vTerrain;
 varying float vShade;
 
 void main() {
@@ -31,6 +33,7 @@ void main() {
   vNormalW = normal;
   vTone = aTone;
   vKind = aKind;
+  vTerrain = aTerrain;
   vShade = aShade;
   gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(pos, 1.0);
 }
@@ -51,7 +54,27 @@ varying vec2 vLogical;
 varying vec3 vNormalW;
 varying float vTone;
 varying float vKind;
+varying float vTerrain;
 varying float vShade;
+
+/** 特殊地形：靠实例属性换程序化纹理，不新增 cell 值（§5.3）。 */
+vec3 terrainColor(vec3 alb, vec2 logical) {
+  if (vTerrain < 0.5) return alb;
+  if (vTerrain < 1.5) {
+    // 乱石：高频碎块，色偏暖灰
+    float n = fract(sin(dot(floor(logical * 1.7), vec2(127.1, 311.7))) * 43758.5453);
+    return alb * mix(0.68, 1.12, n) * vec3(1.06, 0.98, 0.9);
+  }
+  if (vTerrain < 2.5) {
+    // 水渍：冷色覆盖 + 一道游动的反光
+    float wave = sin(logical.x * 0.9 + logical.y * 0.5);
+    return mix(alb, vec3(0.16, 0.27, 0.34), 0.55)
+      + vec3(0.10, 0.13, 0.15) * (0.5 + 0.5 * wave);
+  }
+  // 风口：暗色横栅
+  float slats = step(0.55, fract(logical.y * 0.55));
+  return mix(alb * 0.62, vec3(0.12, 0.13, 0.14), 0.45) * (0.75 + 0.35 * slats);
+}
 
 void main() {
   float d = distance(vLogical, uPlayerLogical);
@@ -62,6 +85,7 @@ void main() {
 
   vec2 uv = vLogical / uTile;
   vec3 alb = texture2D(uAlbedo, uv).rgb * mix(0.92, 1.08, vTone);
+  alb = terrainColor(alb, vLogical);
   vec3 bump = texture2D(uNormalMap, uv).xyz * 2.0 - 1.0;
   vec3 n = normalize(vNormalW + vec3(bump.x, 0.0, bump.y) * 0.35);
   float diff = max(dot(n, normalize(uLightDir)), 0.0);

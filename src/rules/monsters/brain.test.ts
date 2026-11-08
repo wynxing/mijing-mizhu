@@ -74,6 +74,47 @@ describe('感知与三态', () => {
     expect(updatePerception(monster, scent, PLAYER, 0).state).toBe('wander');
   });
 
+  it('感知半径外的气味不会触发警觉', () => {
+    const monster = monsterAt(SNIFFER, offsetToAxial(5, 2));
+    const far = offsetToAxial(5, 6);
+    const scent = addScent(createScent(), [far, far, far, far, far]);
+    expect(updatePerception(monster, scent, PLAYER, 0).state).toBe('wander');
+  });
+
+  it('气味并列时锁定 dq/dr 最小的格，与写入顺序无关', () => {
+    const monster = monsterAt(SNIFFER, offsetToAxial(5, 2));
+    // monster = {q:4,r:2}；west = dq -1、north = dq 0，west 应当胜出。
+    const west = { q: monster.pos.q - 1, r: monster.pos.r };
+    const north = { q: monster.pos.q, r: monster.pos.r - 1 };
+    const scent = addScent(createScent(), [north, north, west, west]);
+    expect(updatePerception(monster, scent, PLAYER, 0).lastKnown).toEqual(west);
+  });
+
+  it('守卫激活后感知全图，远处的气味也能锁定', () => {
+    const far = offsetToAxial(38, 24);
+    const scent = addScent(createScent(), [far, far]);
+    const player = offsetToAxial(40, 25);
+    const guardian = {
+      ...monsterAt(GUARDIAN, offsetToAxial(1, 1)),
+      bossPhase: 1 as const,
+    };
+    const perceived = updatePerception(guardian, scent, player, 0);
+    expect(perceived.state).toBe('alert');
+    expect(perceived.lastKnown).toEqual(far);
+    expect(updatePerception(monsterAt(SNIFFER, offsetToAxial(1, 1)), scent, player, 0).state).toBe(
+      'wander',
+    );
+  });
+
+  it('未激活的守卫不受任何气味影响', () => {
+    const far = offsetToAxial(38, 24);
+    const scent = addScent(createScent(), [far, far]);
+    const guardian = monsterAt(GUARDIAN, offsetToAxial(1, 1));
+    const perceived = updatePerception(guardian, scent, offsetToAxial(40, 25), 0);
+    expect(perceived.state).toBe('wander');
+    expect(perceived.lastKnown).toBeNull();
+  });
+
   it('距离 ≤ 2 → 直接进入追击并标记被发现', () => {
     const monster = monsterAt(SNIFFER, offsetToAxial(6, 5));
     const perceived = updatePerception(monster, createScent(), PLAYER, 0);
@@ -166,6 +207,7 @@ describe('追击解除与意图时序', () => {
   it('eager 怪物跳过预警直接行动', () => {
     const guardian = {
       ...monsterAt(GUARDIAN, offsetToAxial(6, 5)),
+      bossPhase: 1 as const,
       state: 'chase' as const,
       spotted: true,
       intent: { kind: 'attack' as const, damage: GUARDIAN.damage },

@@ -20,6 +20,7 @@ import {
   cellAtLevel,
   generateLevel,
   levelAsCellGrid,
+  roomQuadrant,
   type Level,
   type LevelGenParams,
 } from './generator';
@@ -50,7 +51,7 @@ export function countFloorCells(level: Level): number {
   return count;
 }
 
-/** 死路：只有 1 个地面邻居且不是起终点的格子。阶段 1 只统计、不拦截。 */
+/** 死路：只有 1 个地面邻居且不是起终点的格子。阶段 2 要求为 0（§9.4）。 */
 export function countDeadEnds(level: Level): number {
   let deadEnds = 0;
   for (let row = 0; row < level.height; row++) {
@@ -133,6 +134,26 @@ export function validateLevel(level: Level, params?: LevelGenParams): string[] {
     }
   }
 
+  const startRooms = level.rooms.filter((room) => room.kind === 'start');
+  const exitRooms = level.rooms.filter((room) => room.kind === 'exit');
+  const encounterRooms = level.rooms.filter((room) => room.kind === 'encounter');
+  if (startRooms.length !== 1) errors.push('起点房数量不为 1');
+  if (exitRooms.length !== 1) errors.push('出口房数量不为 1');
+  // 3 间奇遇房是「连答 3 题」在一局内可达的前提（§8.1）。
+  if (encounterRooms.length !== 3) errors.push('奇遇房数量不为 3');
+  else {
+    const quadrants = new Set(
+      encounterRooms.map((room) => roomQuadrant(room, level.width, level.height)),
+    );
+    if (quadrants.size !== encounterRooms.length) errors.push('奇遇房落在同一象限');
+  }
+  for (const room of level.rooms) {
+    if (cellAtLevel(level, room.door) !== CELL_FLOOR) {
+      errors.push('房间门不在可走格上');
+      break;
+    }
+  }
+
   const floorCells = countFloorCells(level);
   const fill = floorCells / (level.width * level.height);
   if (fill < 0.25 || fill > 0.55) errors.push('地面填充率不在 25%–55%');
@@ -143,6 +164,7 @@ export function validateLevel(level: Level, params?: LevelGenParams): string[] {
 
   const cycles = countFloorEdges(level) - floorCells + 1;
   if (cycles < 2) errors.push('迷宫缺少环路');
+  if (countDeadEnds(level) > 0) errors.push('存在死路');
 
   for (let col = 0; col < level.width; col++) {
     if (cellAtLevel(level, offsetToAxial(col, 0)) === CELL_FLOOR) {
@@ -200,13 +222,35 @@ export function validateLevel(level: Level, params?: LevelGenParams): string[] {
     }
   }
 
+  const guardians = level.monsters.filter((placement) => placement.defId === 'guardian');
+  if (guardians.length !== 1) errors.push('守卫数量不为 1');
+  else if (hexDistance(guardians[0].pos, level.exit) > 2) errors.push('守卫距出口过远');
+
+  const occupied = new Set(level.monsters.map((placement) => axialKey(placement.pos)));
+  for (const key of level.terrain.keys()) {
+    const [q, r] = key.split(',');
+    if (cellAtLevel(level, { q: Number(q), r: Number(r) }) !== CELL_FLOOR) {
+      errors.push('特殊地形不在可走格上');
+      break;
+    }
+    if (
+      key === axialKey(level.start) ||
+      key === axialKey(level.exit) ||
+      level.traps.has(key) ||
+      occupied.has(key)
+    ) {
+      errors.push('特殊地形与起点、出口、陷阱或怪物重叠');
+      break;
+    }
+  }
+
   return errors;
 }
 
-/** 生成并校验；失败时换种子重试。 */
+/** 生成并校验；失败时换种子重试（上限 24，见 §9.4）。 */
 export function generateValidLevel(params: LevelGenParams): Level {
   let lastErrors: string[] = [];
-  for (let attempt = 0; attempt < 16; attempt++) {
+  for (let attempt = 0; attempt < 24; attempt++) {
     const seed = params.seed + attempt;
     const level = generateLevel({ ...params, seed });
     lastErrors = validateLevel(level, { ...params, seed });

@@ -179,3 +179,35 @@ test('场景：走出一条记忆轨迹，提灯区亮于记忆区，未探索�
 
   await page.screenshot({ path: 'test-results/scene-r1.png' });
 });
+
+test('奇遇门冷光与画面亮度：门在未探索区发光，画面非黑', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('mijing.lastSeed', '42');
+  });
+  await page.goto('/');
+  await expect(page.getByTestId('board')).toBeVisible();
+  await page.waitForTimeout(600);
+
+  const result = await page.evaluate(async () => {
+    const geometryPath = '/src/rules/grid/geometry.ts';
+    const { axialKey } = (await import(geometryPath)) as any;
+    const debug = (window as unknown as Record<string, any>).__mijing;
+    const state = debug.store.getState().game;
+    const plan = debug.scene.debugPlan();
+    const doors = state.level.rooms.filter((room: any) => room.kind === 'encounter');
+    const unexplored = doors.filter(
+      (room: any) => !state.fog.visited.has(axialKey(room.door)),
+    ).length;
+    return {
+      doorRooms: doors.length,
+      glowInstances: plan.encounterDoors.length,
+      unexplored,
+      lit: debug.scene.sampleNonBlack(),
+    };
+  });
+
+  expect(result.doorRooms).toBe(3);
+  expect(result.glowInstances).toBe(3);
+  expect(result.unexplored).toBeGreaterThan(0);
+  expect(result.lit).toBeGreaterThan(500);
+});

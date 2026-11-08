@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Rng32 } from '../../core/rng';
 import { createGame } from '../game/createGame';
 import { reduceGame, movementPointsOf, listenLimit } from '../turn/reducer';
 import { LISTEN_PER_TURN } from '../fog/listen';
@@ -79,10 +80,11 @@ describe('出牌', () => {
   });
 
   it('换骰把骰子重掷回未预留池', () => {
-    const state = stateWithCard('reroll', 4);
+    const state = { ...stateWithCard('reroll', 4), rngState: 12345 };
     const next = reduceGame(state, { type: 'playCard', cardUid: 'reroll-0', dieId: 0 });
     expect(next.dice[0].reserved).toBe(false);
-    expect(next.dice[0].value).not.toBe(4);
+    expect(next.dice[0].value).toBe(new Rng32(12345).int(1, 6));
+    expect(next.rngState).not.toBe(state.rngState);
   });
 
   it('驱散把目标怪物打回游荡', () => {

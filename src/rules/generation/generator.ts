@@ -16,7 +16,7 @@ export interface LevelGenParams {
   height: number;
   /** 目标房间数（设计文档 §9.1：6–9）。 */
   roomCount: number;
-  /** 怪物数量预算：阶段 1 定为 8（见 docs/balance/phase1-mobility.md）。 */
+  /** 怪物数量预算：阶段 2 定为 10 = 1 守卫 + 2 战斗房嗅犬 + 7 游荡（§9.4）。 */
   monsterBudget: number;
   /** 陷阱密度：占地面格的比例。 */
   trapDensity: number;
@@ -28,12 +28,12 @@ export interface LevelGenParams {
 }
 
 export const DEFAULT_GEN_PARAMS: LevelGenParams = {
-  width: 34,
-  height: 24,
-  roomCount: 7,
-  monsterBudget: 8,
+  width: 46,
+  height: 30,
+  roomCount: 9,
+  monsterBudget: 10,
   trapDensity: 0.06,
-  minPath: 20,
+  minPath: 60,
   loopRatio: 0.18,
   seed: 1,
 };
@@ -43,13 +43,24 @@ export interface MonsterPlacement {
   pos: Axial;
 }
 
-/** 房间矩形，偏移坐标（odd-r）。 */
+/** 房间矩形，偏移坐标（odd-r）。BSP 内部只用几何，不带类型。 */
 export interface RoomRect {
   col: number;
   row: number;
   w: number;
   h: number;
 }
+
+export type RoomKind = 'start' | 'exit' | 'encounter' | 'chest' | 'rest' | 'battle' | 'trap';
+
+/** 房间：几何 + 类型 + 门位置（§8.1）。 */
+export interface Room extends RoomRect {
+  kind: RoomKind;
+  door: Axial;
+}
+
+/** 特殊地形三类，效果统一为清除周围气味（§5.3）。 */
+export type TerrainKind = 'rubble' | 'water' | 'vent';
 
 export interface Level {
   width: number;
@@ -59,8 +70,10 @@ export interface Level {
   exit: Axial;
   /** 语义为 start→exit 的 A* 最短路。 */
   mainPath: Axial[];
-  rooms: RoomRect[];
+  rooms: Room[];
   traps: Set<AxialKey>;
+  /** 特殊地形：只影响气味，不改变通行性，因此不新增 cell 值。 */
+  terrain: Map<AxialKey, TerrainKind>;
   monsters: MonsterPlacement[];
   seed: number;
 }
@@ -76,6 +89,14 @@ const MIN_LEAF = 5;
 const ROOM_MAX_W = 9;
 const ROOM_MAX_H = 7;
 const WALL_AUGMENT_CHANCE = 0.2;
+/** 特殊地形密度：每 80 个地面格 1 个（§14）。 */
+const TERRAIN_PER_CELLS = 80;
+/** 战斗房额外布 2 只嗅犬，计入预算（§8.1）。 */
+const BATTLE_ROOM_SNIFFERS = 2;
+/** 陷阱房内陷阱权重 ×3，全局密度不变（§8.1）。 */
+const TRAP_ROOM_WEIGHT = 3;
+const TERRAIN_KINDS: readonly TerrainKind[] = ['rubble', 'water', 'vent'];
+const ROOM_KINDS: readonly RoomKind[] = ['chest', 'rest', 'battle', 'trap'];
 
 interface BspNode {
   rect: RoomRect;
@@ -354,6 +375,115 @@ function carveLoops(canvas: Canvas, rng: Rng32, loopRatio: number): void {
   for (let i = 0; i < targets; i++) canvas.carve(shuffled[i]);
 }
 
+/**
+ * 剪死路：迭代剥掉地面邻居 ≤1 的格子至不动点（§9.4）。
+ * 剥叶子不会断连，剩下的 2-核仍连通；在接边缘走廊与布点之前做，起点/出口因此不受影响。
+ */
+function pruneDeadEnds(canvas: Canvas): void {
+  for (;;) {
+    let removed = 0;
+    for (let row = 1; row < canvas.height - 1; row++) {
+      for (let col = 1; col < canvas.width - 1; col++) {
+        const cell = offsetToAxial(col, row);
+        if (!canvas.isFloor(cell)) continue;
+        let floorNeighbors = 0;
+        for (let dir = 0; dir < 6; dir++) {
+          if (canvas.isFloor(neighbor(cell, dir as DirIndex))) floorNeighbors++;
+        }
+        if (floorNeighbors > 1) continue;
+        canvas.setWall(cell);
+        removed++;
+      }
+    }
+    if (removed === 0) return;
+  }
+}
+
+function roomContains(room: RoomRect, cell: Axial): boolean {
+  const { col, row } = axialToOffset(cell);
+  return (
+    col >= room.col && col < room.col + room.w && row >= room.row && row < room.row + room.h
+  );
+}
+
+/** 门 = 房间边界上接到走廊的格；没有外接口时退回房间内任一格。 */
+function roomDoor(canvas: Canvas, room: RoomRect, rng: Rng32): Axial {
+  const doors: Axial[] = [];
+  const floors: Axial[] = [];
+  for (const cell of roomCells(room)) {
+    if (!canvas.isFloor(cell)) continue;
+    floors.push(cell);
+    const { col, row } = axialToOffset(cell);
+    const onEdge =
+      col === room.col ||
+      col === room.col + room.w - 1 ||
+      row === room.row ||
+      row === room.row + room.h - 1;
+    if (!onEdge) continue;
+    for (let dir = 0; dir < 6; dir++) {
+      const next = neighbor(cell, dir as DirIndex);
+      if (canvas.isFloor(next) && !roomContains(room, next)) {
+        doors.push(cell);
+        break;
+      }
+    }
+  }
+  const pool = doors.length > 0 ? doors : floors;
+  return pool[rng.int(0, pool.length - 1)];
+}
+
+/** 以地图中心划分四象限，用于「奇遇房分散」约束（§9.2）。 */
+export function roomQuadrant(room: RoomRect, width: number, height: number): number {
+  const right = room.col + room.w / 2 >= width / 2 ? 1 : 0;
+  const bottom = room.row + room.h / 2 >= height / 2 ? 2 : 0;
+  return right + bottom;
+}
+
+/** 奇遇房数量（§8.1）：一局 3 间，保证「连答 3 题」可在单局内达成。 */
+const ENCOUNTER_ROOM_COUNT = 3;
+
+/** 房间标签分配（§8.1）：起终点房固定，奇遇 3 间异象限，其余按顺序。 */
+function assignRoomKinds(
+  canvas: Canvas,
+  rng: Rng32,
+  rects: readonly RoomRect[],
+  startRoom: RoomRect,
+  exitRoom: RoomRect,
+  width: number,
+  height: number,
+): Room[] {
+  const kinds = new Map<RoomRect, RoomKind>([
+    [startRoom, 'start'],
+    [exitRoom, 'exit'],
+  ]);
+
+  const rest = shuffleWithRng(
+    rng,
+    rects.filter((room) => room !== startRoom && room !== exitRoom),
+  );
+  const quadrants = new Set<number>();
+  for (const room of rest) {
+    if (quadrants.size >= ENCOUNTER_ROOM_COUNT) break;
+    const quadrant = roomQuadrant(room, width, height);
+    if (quadrants.has(quadrant)) continue;
+    quadrants.add(quadrant);
+    kinds.set(room, 'encounter');
+  }
+
+  let index = 0;
+  for (const room of rest) {
+    if (kinds.has(room)) continue;
+    kinds.set(room, index < ROOM_KINDS.length ? ROOM_KINDS[index] : ROOM_KINDS[rng.int(0, ROOM_KINDS.length - 1)]);
+    index++;
+  }
+
+  return rects.map((rect) => ({
+    ...rect,
+    kind: kinds.get(rect)!,
+    door: roomDoor(canvas, rect, rng),
+  }));
+}
+
 /** 从左侧/右侧边缘接一条走廊进指定房间，返回边缘格作为起点/出口。 */
 function attachEdgeCorridor(
   canvas: Canvas,
@@ -379,8 +509,8 @@ function attachEdgeCorridor(
 }
 
 /**
- * 布点：怪物散布在离起点 ≥ 8 格的地面格上（设计文档 §9.1 的安全期）。
- * 组合 50% 嗅犬 / 20% 石卫 / 15% 游魂 / 15% 蛛巢（§6.4）。
+ * 布点（§9.4）：守卫守出口、战斗房 2 只嗅犬、其余按 50% 嗅犬 / 20% 石卫 / 15% 游魂 / 15% 蛛巢。
+ * 全部距起点 ≥8，避开出口、陷阱与已占格；凑不满预算时由校验拦下并重试。
  */
 function placeMonsters(
   canvas: Canvas,
@@ -388,80 +518,144 @@ function placeMonsters(
   start: Axial,
   exit: Axial,
   traps: Set<AxialKey>,
+  rooms: readonly Room[],
   budget: number,
 ): MonsterPlacement[] {
-  const candidates: Axial[] = [];
+  const floors: Axial[] = [];
   for (let row = 1; row < canvas.height - 1; row++) {
     for (let col = 1; col < canvas.width - 1; col++) {
       const cell = offsetToAxial(col, row);
-      if (!canvas.isFloor(cell)) continue;
-      if (hexDistance(cell, start) < 8) continue;
-      const key = axialKey(cell);
-      if (key === axialKey(exit) || traps.has(key)) continue;
-      candidates.push(cell);
+      if (canvas.isFloor(cell)) floors.push(cell);
     }
   }
 
-  return shuffleWithRng(rng, candidates)
-    .slice(0, budget)
-    .map((pos, index) => {
-      const ratio = index / Math.max(1, budget);
-      const defId =
-        ratio < 0.5
-          ? 'sniffer'
-          : ratio < 0.7
-            ? 'stonewarden'
-            : ratio < 0.85
-              ? 'wraith'
-              : 'brood';
-      return { defId, pos };
-    });
+  const taken = new Set<AxialKey>();
+  const placements: MonsterPlacement[] = [];
+  const exitKey = axialKey(exit);
+  const take = (pool: readonly Axial[], defId: string): void => {
+    for (const cell of pool) {
+      const key = axialKey(cell);
+      if (!canvas.isFloor(cell) || taken.has(key) || traps.has(key) || key === exitKey) continue;
+      if (hexDistance(cell, start) < 8) continue;
+      taken.add(key);
+      placements.push({ defId, pos: cell });
+      return;
+    }
+  };
+
+  const exitRoom = rooms.find((room) => room.kind === 'exit');
+  const guardianPool = shuffleWithRng(rng, exitRoom ? roomCells(exitRoom) : [])
+    .filter((cell) => hexDistance(cell, exit) >= 1 && hexDistance(cell, exit) <= 2)
+    .sort((a, b) => hexDistance(a, exit) - hexDistance(b, exit));
+  take(guardianPool, 'guardian');
+
+  for (const room of rooms) {
+    if (room.kind !== 'battle') continue;
+    const pool = shuffleWithRng(rng, roomCells(room));
+    for (let i = 0; i < BATTLE_ROOM_SNIFFERS; i++) take(pool, 'sniffer');
+  }
+
+  const roaming = Math.max(0, budget - placements.length);
+  const pool = shuffleWithRng(rng, floors);
+  for (let i = 0; i < roaming; i++) {
+    const ratio = i / Math.max(1, roaming);
+    const defId =
+      ratio < 0.5 ? 'sniffer' : ratio < 0.7 ? 'stonewarden' : ratio < 0.85 ? 'wraith' : 'brood';
+    take(pool, defId);
+  }
+
+  return placements;
 }
 
-/** 起点/出口都可达（把全部陷阱视为墙）。 */
-function escapeWithTrapsBlocked(
+/** 把全部陷阱视为墙后，起点到出口的一条通路；无解返回 null。 */
+function escapePathWithTrapsBlocked(
   canvas: Canvas,
   start: Axial,
   exit: Axial,
   traps: Set<AxialKey>,
-): boolean {
+): Axial[] | null {
   const cells = new Uint8Array(canvas.cells);
   for (const key of traps) {
     const [q, r] = key.split(',');
     cells[cellIndex(canvas.grid, { q: Number(q), r: Number(r) })] = CELL_WALL;
   }
-  return findPath({ cells, grid: canvas.grid }, start, exit) !== null;
+  return findPath({ cells, grid: canvas.grid }, start, exit);
 }
 
-/** 陷阱：非起点/出口、距起点 ≥3 的地面格；每放一个都验证仍可绕开。 */
+/** 陷阱：非起点/出口、距起点 ≥3 的地面格；陷阱房内权重 ×3；每放一个都验证仍可绕开。 */
 function placeTraps(
   canvas: Canvas,
   rng: Rng32,
   start: Axial,
   exit: Axial,
   density: number,
+  rooms: readonly Room[],
 ): Set<AxialKey> {
+  const trapRooms = rooms.filter((room) => room.kind === 'trap');
   const candidates: Axial[] = [];
+  const weighted: Axial[] = [];
   for (let row = 1; row < canvas.height - 1; row++) {
     for (let col = 1; col < canvas.width - 1; col++) {
       const cell = offsetToAxial(col, row);
       if (!canvas.isFloor(cell)) continue;
       if (hexDistance(cell, start) < 3) continue;
-      const key = axialKey(cell);
-      if (key === axialKey(exit)) continue;
+      if (axialKey(cell) === axialKey(exit)) continue;
       candidates.push(cell);
+      const weight = trapRooms.some((room) => roomContains(room, cell)) ? TRAP_ROOM_WEIGHT : 1;
+      for (let i = 0; i < weight; i++) weighted.push(cell);
     }
   }
 
   const traps = new Set<AxialKey>();
   const target = Math.round(candidates.length * density);
-  for (const cell of shuffleWithRng(rng, candidates)) {
+  // 不在当前通路上的陷阱不可能堵死出口，直接收下；只有踩断通路时才重算一次 A*。
+  const initial = escapePathWithTrapsBlocked(canvas, start, exit, traps) ?? [];
+  let onPath = new Set<AxialKey>(initial.map(axialKey));
+  for (const cell of shuffleWithRng(rng, weighted)) {
     if (traps.size >= target) break;
     const key = axialKey(cell);
+    if (traps.has(key)) continue;
     traps.add(key);
-    if (!escapeWithTrapsBlocked(canvas, start, exit, traps)) traps.delete(key);
+    if (!onPath.has(key)) continue;
+    const next = escapePathWithTrapsBlocked(canvas, start, exit, traps);
+    if (!next) {
+      traps.delete(key);
+      continue;
+    }
+    onPath = new Set(next.map(axialKey));
   }
   return traps;
+}
+
+/** 特殊地形：地面格 / 80，三类等概率，避开起点 / 出口 / 陷阱 / 怪物（§5.3）。 */
+function placeTerrain(
+  canvas: Canvas,
+  rng: Rng32,
+  start: Axial,
+  exit: Axial,
+  traps: Set<AxialKey>,
+  monsters: readonly MonsterPlacement[],
+): Map<AxialKey, TerrainKind> {
+  const blocked = new Set<AxialKey>([axialKey(start), axialKey(exit), ...traps]);
+  for (const monster of monsters) blocked.add(axialKey(monster.pos));
+
+  let floorCount = 0;
+  const candidates: Axial[] = [];
+  for (let row = 1; row < canvas.height - 1; row++) {
+    for (let col = 1; col < canvas.width - 1; col++) {
+      const cell = offsetToAxial(col, row);
+      if (!canvas.isFloor(cell)) continue;
+      floorCount++;
+      if (!blocked.has(axialKey(cell))) candidates.push(cell);
+    }
+  }
+
+  const terrain = new Map<AxialKey, TerrainKind>();
+  const target = Math.floor(floorCount / TERRAIN_PER_CELLS);
+  for (const cell of shuffleWithRng(rng, candidates).slice(0, target)) {
+    terrain.set(axialKey(cell), TERRAIN_KINDS[rng.int(0, TERRAIN_KINDS.length - 1)]);
+  }
+  return terrain;
 }
 
 export function generateLevel(params: LevelGenParams): Level {
@@ -502,6 +696,7 @@ export function generateLevel(params: LevelGenParams): Level {
 
   for (const room of rooms) augmentWalls(canvas, rng, room, protectedCells);
   carveLoops(canvas, rng, params.loopRatio);
+  pruneDeadEnds(canvas);
 
   const leftRoom = rooms.reduce((best, room) => (room.col < best.col ? room : best), rooms[0]);
   const rightRoom = rooms.reduce(
@@ -511,11 +706,30 @@ export function generateLevel(params: LevelGenParams): Level {
   const start = attachEdgeCorridor(canvas, rng, leftRoom, 'left', protectedCells);
   const exit = attachEdgeCorridor(canvas, rng, rightRoom, 'right', protectedCells);
 
+  const typedRooms = assignRoomKinds(
+    canvas,
+    rng,
+    rooms,
+    leftRoom,
+    rightRoom,
+    params.width,
+    params.height,
+  );
+
   const map: CellGrid = { cells: canvas.cells, grid: canvas.grid };
   const mainPath = findPath(map, start, exit) ?? [start];
 
-  const traps = placeTraps(canvas, rng, start, exit, params.trapDensity);
-  const monsters = placeMonsters(canvas, rng, start, exit, traps, params.monsterBudget);
+  const traps = placeTraps(canvas, rng, start, exit, params.trapDensity, typedRooms);
+  const monsters = placeMonsters(
+    canvas,
+    rng,
+    start,
+    exit,
+    traps,
+    typedRooms,
+    params.monsterBudget,
+  );
+  const terrain = placeTerrain(canvas, rng, start, exit, traps, monsters);
 
   return {
     width: params.width,
@@ -524,8 +738,9 @@ export function generateLevel(params: LevelGenParams): Level {
     start,
     exit,
     mainPath,
-    rooms,
+    rooms: typedRooms,
     traps,
+    terrain,
     monsters,
     seed: params.seed,
   };

@@ -35,4 +35,10 @@ export type GameEvent =
       damage: number;
       avoided: boolean;
     }
-  | { type: 'monsterDied'; monsterUid: string; monsterName: string; at: Axial };
+  | { type: 'monsterDied'; monsterUid: string; monsterName: string; at: Axial }
+  /** 守卫进入新阶段（§6.4）。 */
+  | { type: 'bossPhase'; monsterUid: string; monsterName: string; phase: number }
+  /** 守卫阶段 2 的召唤物登场。 */
+  | { type: 'monsterSummoned'; monsterUid: string; monsterName: string; at: Axial }
+  /** 守卫阶段 3 的范围爆发；damage 为走完伤害管线后的实际伤害。 */
+  | { type: 'bossAoE'; at: Axial; radius: number; damage: number };

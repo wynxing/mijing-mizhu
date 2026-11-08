@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useGameStore } from '../state/store';
+import { monsterVisible } from '../render/model';
 
 export function TopBar(): JSX.Element {
   const game = useGameStore((s) => s.game);
@@ -12,7 +13,11 @@ export function TopBar(): JSX.Element {
 
   // 挨打时闪一下：事件流是唯一知道「谁在什么时候打到我」的来源。
   useEffect(() => {
-    const hit = events?.some((event) => event.type === 'monsterAttacked' && !event.avoided);
+    const hit = events?.some(
+      (event) =>
+        (event.type === 'monsterAttacked' && !event.avoided) ||
+        (event.type === 'bossAoE' && event.damage > 0),
+    );
     if (!hit) return;
     setHurt(true);
     const timer = window.setTimeout(() => setHurt(false), 320);
@@ -22,6 +27,11 @@ export function TopBar(): JSX.Element {
   const hp = game?.player.hp ?? 0;
   const maxHp = game?.player.maxHp ?? 100;
   const ratio = maxHp > 0 ? Math.max(0, Math.min(1, hp / maxHp)) : 0;
+
+  // 守卫只有在被看见时才露出血条与阶段，避免泄露出口位置。
+  const boss = game?.monsters.find((monster) => monster.def.id === 'guardian');
+  const bossVisible = game && boss ? monsterVisible(game, boss) : false;
+  const bossRatio = boss && boss.maxHp > 0 ? Math.max(0, Math.min(1, boss.hp / boss.maxHp)) : 0;
 
   return (
     <header className="topbar">
@@ -53,6 +63,21 @@ export function TopBar(): JSX.Element {
           <span className="stat__label">回合</span>
           {game ? game.turn : 0}
         </span>
+        {boss && bossVisible && (
+          <span
+            className="stat stat--boss"
+            title={`守卫 · 阶段 ${boss.bossPhase || 1}`}
+            data-testid="boss"
+          >
+            <span className="stat__label">守卫 P{boss.bossPhase || 1}</span>
+            <span className="hpbar hpbar--boss">
+              <span className="hpbar__fill" style={{ width: `${bossRatio * 100}%` }} />
+            </span>
+            <span className="hpbar__text">
+              {boss.hp}/{boss.maxHp}
+            </span>
+          </span>
+        )}
         <button type="button" onClick={() => startGame(Math.floor(Math.random() * 0x7fffffff))}>
           换个迷宫
         </button>

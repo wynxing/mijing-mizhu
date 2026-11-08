@@ -50,12 +50,11 @@ export interface DeterminismReport {
 }
 
 /**
- * 同种子同操作两次独立运行必须逐步完全一致。
- * 改了操作则必须在某一步分叉 —— 否则说明操作没被记录，验证就是空转。
+ * 逐步比较两条轨迹。
+ * 同种子同操作两次独立运行必须完全一致；改了操作则必须在某一步分叉 ——
+ * 否则说明快照没覆盖被改动的状态，验证就是空转。
  */
-export function compareRuns(seed: number, steps: IntentStep<GameIntent>[]): DeterminismReport {
-  const a = runScript(seed, steps);
-  const b = runScript(seed, steps);
+export function compareTraces(a: RunTrace, b: RunTrace): DeterminismReport {
   const length = Math.min(a.hashes.length, b.hashes.length);
 
   let firstDivergence = -1;
@@ -77,4 +76,8 @@ export function compareRuns(seed: number, steps: IntentStep<GameIntent>[]): Dete
     hashesA: a.hashes,
     hashesB: b.hashes,
   };
+}
+
+export function compareRuns(seed: number, steps: IntentStep<GameIntent>[]): DeterminismReport {
+  return compareTraces(runScript(seed, steps), runScript(seed, steps));
 }

@@ -25,6 +25,8 @@ export const PALETTE = {
   exitMark: '#e0b53c',
   glyphQuiet: '#9dc3dd',
   glyphNoisy: '#e0a35c',
+  /** 未探明奇遇房门的冷光：迷雾里唯一自发光的几何。 */
+  encounterGlow: '#7fc8e8',
   highlight: '#7fd6a3',
   highlightDot: '#e6fff2',
   monster: '#7a6480',

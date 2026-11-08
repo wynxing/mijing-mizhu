@@ -21,7 +21,7 @@ const DIE_KEYS: Record<string, number> = {
   Digit3: 2,
 };
 
-/** 全局快捷键：空格结束回合 · Esc 取消预留 · 1/2/3 选骰子 · Q 探听 · WASD/方向键移动。 */
+/** 全局快捷键：空格结束回合 · Esc 取消预留 · 1/2/3 选骰子 · Q 探听 · E 交互 · WASD/方向键移动。 */
 export function useKeyboard(): void {
   const dispatch = useGameStore((s) => s.dispatch);
   const game = useGameStore((s) => s.game);
@@ -31,6 +31,8 @@ export function useKeyboard(): void {
       const target = event.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
       if (!useGameStore.getState().game) return;
+      // 题面打开时按键全部交给面板自管（T/F/H/Esc），避免移动与结束回合误触。
+      if (useGameStore.getState().view.encounterOpen) return;
 
       if (event.code === 'Space') {
         event.preventDefault();
@@ -51,6 +53,11 @@ export function useKeyboard(): void {
 
       if (event.code === 'KeyQ') {
         dispatch({ type: 'listen' });
+        return;
+      }
+
+      if (event.code === 'KeyE') {
+        dispatch({ type: 'interact' });
         return;
       }
 

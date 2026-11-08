@@ -38,6 +38,8 @@ const DASH_SPANS: [number, number][] = [
 const MAX_FLOATERS = 8;
 const MAX_FLASHES = 8;
 const MAX_STREAKS = 8;
+/** 奇遇房恰好 3 个（§8.1），门冷光池按上限开。 */
+const MAX_ENCOUNTER_DOORS = 3;
 const FLOATER_W = BASE_HEX_SIZE * 1.7;
 const FLOATER_H = BASE_HEX_SIZE * 0.85;
 /** 飘字在生命周期里抬升的世界高度。 */
@@ -108,9 +110,30 @@ function drawFloater(rig: FloaterRig, text: string, color: string): void {
   ctx.fillText(text, 64, 34);
 }
 
-/** 命中闪光的径向光斑（additive，贴地）。 */
-function makeGlowTexture(): CanvasTexture {
+/** 奇遇房门冷光：冷色径向光晕 + 一圈细环，不画字（视觉规格 v2.0）。 */
+function makeEncounterGlowTexture(): CanvasTexture {
   const canvas = document.createElement('canvas');
+  canvas.width = 128;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d')!;
+  const grad = ctx.createRadialGradient(64, 64, 6, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(190, 234, 255, 0.95)');
+  grad.addColorStop(0.35, 'rgba(127, 200, 232, 0.42)');
+  grad.addColorStop(1, 'rgba(127, 200, 232, 0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 128, 128);
+  ctx.strokeStyle = PALETTE.encounterGlow;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(64, 64, 34, 0, Math.PI * 2);
+  ctx.stroke();
+  const tex = new CanvasTexture(canvas);
+  tex.colorSpace = SRGBColorSpace;
+  return tex;
+}
+
+/** 命中闪光的径向光斑（additive，贴地）。 */
+function makeGlowTexture(): CanvasTexture {  const canvas = document.createElement('canvas');
   canvas.width = 64;
   canvas.height = 64;
   const ctx = canvas.getContext('2d')!;
@@ -150,6 +173,9 @@ export class Overlays {
   private readonly flashGeo = new PlaneGeometry(1, 1);
   private readonly glowTex = makeGlowTexture();
   private readonly flashes: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
+  private readonly encounterTex = makeEncounterGlowTexture();
+  private readonly encounterGeo = new PlaneGeometry(BASE_HEX_SIZE * 1.15, BASE_HEX_SIZE * 1.15);
+  private readonly encounterGlows: Mesh<PlaneGeometry, MeshBasicMaterial>[] = [];
   private readonly streakGeo: BufferGeometry;
   private readonly streakPos: Float32Array;
   private readonly streakMat: LineBasicMaterial;
@@ -240,8 +266,25 @@ export class Overlays {
       this.group.add(quad);
     }
 
-    this.streakPos = new Float32Array(MAX_STREAKS * 2 * 3);
-    this.streakGeo = new BufferGeometry();
+    // 冷光不受提灯衰减：未探索区里它必须自己亮着。
+    for (let i = 0; i < MAX_ENCOUNTER_DOORS; i += 1) {
+      const mat = new MeshBasicMaterial({
+        map: this.encounterTex,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,
+        blending: AdditiveBlending,
+        opacity: 0.85,
+      });
+      const quad = new Mesh(this.encounterGeo, mat);
+      quad.frustumCulled = false;
+      quad.renderOrder = 22;
+      quad.visible = false;
+      this.encounterGlows.push(quad);
+      this.group.add(quad);
+    }
+
+    this.streakPos = new Float32Array(MAX_STREAKS * 2 * 3);    this.streakGeo = new BufferGeometry();
     this.streakGeo.setAttribute('position', new BufferAttribute(this.streakPos, 3));
     this.streakMat = new LineBasicMaterial({
       color: paletteColor('streak'),
@@ -340,6 +383,18 @@ export class Overlays {
     }
     for (let i = g; i < this.glyphs.length; i += 1) this.glyphs[i].visible = false;
 
+    const doorCount = Math.min(plan.encounterDoors.length, this.encounterGlows.length);
+    for (let i = 0; i < doorCount; i += 1) {
+      const quad = this.encounterGlows[i];
+      quad.visible = true;
+      quad.quaternion.copy(camera.quaternion);
+      const w = logicalToWorld(plan.encounterDoors[i], GLYPH_LIFT);
+      quad.position.set(w.x, w.y, w.z);
+    }
+    for (let i = doorCount; i < this.encounterGlows.length; i += 1) {
+      this.encounterGlows[i].visible = false;
+    }
+
     for (let i = 0; i < this.floaters.length; i += 1) {
       const rig = this.floaters[i];
       const f = plan.floaters[i];
@@ -408,6 +463,8 @@ export class Overlays {
     this.floaterGeo.dispose();
     this.flashGeo.dispose();
     this.glowTex.dispose();
+    this.encounterGeo.dispose();
+    this.encounterTex.dispose();
     this.streakGeo.dispose();
     for (const rig of this.floaters) {
       rig.texture.dispose();
@@ -415,6 +472,7 @@ export class Overlays {
     }
     for (const quad of this.flashes) quad.material.dispose();
     for (const quad of this.glyphs) quad.material.dispose();
+    for (const quad of this.encounterGlows) quad.material.dispose();
     for (const mat of this.materials) mat.dispose();
   }
 }

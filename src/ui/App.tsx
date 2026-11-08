@@ -7,6 +7,7 @@ import { BoardCanvas } from './BoardCanvas';
 import { DiceTray } from './DiceTray';
 import { ActionBar } from './ActionBar';
 import { HandArea } from './HandArea';
+import { QuestionPanel } from './QuestionPanel';
 
 const LAST_SEED_KEY = 'mijing.lastSeed';
 
@@ -37,6 +38,7 @@ export function App(): JSX.Element {
       <TopBar />
       <MessageLog />
       <BoardCanvas />
+      <QuestionPanel />
       <div className="controls">
         <div className="controls__row">
           <DiceTray />

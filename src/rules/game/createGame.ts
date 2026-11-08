@@ -7,6 +7,7 @@ import { createScent } from '../fog/scent';
 import { createMonster } from '../monsters/brain';
 import { monsterDef } from '../monsters/content';
 import { STARTING_HAND, cardDef } from '../cards/content';
+import { BUILTIN_QUESTIONS } from '../encounter/questions';
 import type { GameState } from '../turn/types';
 
 export const PLAYER_MAX_HP = 100;
@@ -37,6 +38,11 @@ export function createGame(seed: number, params?: Partial<LevelGenParams>): Game
     fog: markVisited(createFog(), level.start),
     scent: createScent(),
     hand,
+    roomStates: level.rooms.map(() => ({ settled: false })),
+    restLockUid: null,
+    encounter: null,
+    questionBank: [...BUILTIN_QUESTIONS],
+    answerStreak: 0,
     monsters,
     buffs: [],
     movedThisTurn: false,

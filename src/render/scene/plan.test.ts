@@ -1,17 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import {
   BASE_HEX_SIZE,
+  axialKey,
   axialToPixel,
   hexCorners,
   hexEdgeEndpoints,
+  offsetToAxial,
   parseAxialKey,
   type Axial,
+  type AxialKey,
   type DirIndex,
   type Point,
 } from '../../rules/grid/geometry';
+import { CELL_FLOOR } from '../../rules/grid/path';
+import { cellAtLevel } from '../../rules/generation/generator';
 import { createGame } from '../../rules/game/createGame';
 import { reduceGame } from '../../rules/turn/reducer';
 import { buildRenderModel } from '../model';
+import { FLOOR_CAPACITY } from './floorMesh';
+import { WALL_CAPACITY } from './wallMesh';
 import {
   LANTERN_INNER,
   LANTERN_OUTER,
@@ -87,8 +94,24 @@ describe('场景计划（逻辑空间）', () => {
     }
   });
 
-  it('高亮集合 == 已知可落脚邻居', () => {
-    const model = buildRenderModel(reduceGame(createGame(55), { type: 'listen' }));
+  it('全图探明时地板与墙脊实例数仍在容量内', () => {
+    for (const seed of [55, 1, 42, 404, 1000]) {
+      const state = createGame(seed);
+      const visited = new Set<AxialKey>();
+      for (let row = 0; row < state.level.height; row++) {
+        for (let col = 0; col < state.level.width; col++) {
+          const cell = offsetToAxial(col, row);
+          if (cellAtLevel(state.level, cell) === CELL_FLOOR) visited.add(axialKey(cell));
+        }
+      }
+      const fog = { ...state.fog, visited };
+      const plan = buildScenePlan(buildRenderModel({ ...state, fog }));
+      expect(plan.floors.length, `seed ${seed} 地板实例`).toBeLessThanOrEqual(FLOOR_CAPACITY);
+      expect(plan.walls.length, `seed ${seed} 墙脊实例`).toBeLessThanOrEqual(WALL_CAPACITY);
+    }
+  });
+
+  it('高亮集合 == 已知可落脚邻居', () => {    const model = buildRenderModel(reduceGame(createGame(55), { type: 'listen' }));
     const plan = buildScenePlan(model);
 
     expect(plan.highlights).toHaveLength(model.standableNeighbors.length);
@@ -117,6 +140,70 @@ describe('场景计划（逻辑空间）', () => {
           .toBeGreaterThan(1);
       }
     }
+  });
+
+  it('特殊地形以实例属性进入场景计划', () => {
+    for (let seed = 1; seed < 200; seed++) {
+      const state = createGame(seed);
+      const key = state.level.terrain.keys().next().value;
+      if (!key) continue;
+      const [q, r] = key.split(',').map(Number);
+      const terrainCell = { q, r };
+      const fog = { ...state.fog, visited: new Set([...state.fog.visited, key]) };
+      const plan = buildScenePlan(buildRenderModel({ ...state, fog }));
+      const center = axialToPixel(terrainCell, BASE_HEX_SIZE);
+      const instance = plan.floors.find((floor) => near(floor.logical, center, 0.001));
+      if (!instance) continue; // 该格可能是墙格（地形只布在地面上，理论上不会）
+      expect(instance.kind).toBe(0);
+      expect(instance.terrain).toBeGreaterThan(0);
+      return;
+    }
+    throw new Error('前 200 个种子都没有特殊地形');
+  });
+
+  it('特殊地形只暴露在踏足过的格子上', () => {
+    const state = createGame(55);
+    const plan = buildScenePlan(buildRenderModel(state));
+    expect(plan.floors.every((floor) => floor.terrain === 0)).toBe(true);
+  });
+
+  it('奇遇房门在探明前进入计划，探明后消失', () => {
+    const state = createGame(55);
+    const doors = state.level.rooms
+      .filter((room) => room.kind === 'encounter')
+      .map((room) => room.door);
+    expect(doors).toHaveLength(3);
+
+    const before = buildScenePlan(buildRenderModel(state));
+    expect(before.encounterDoors).toHaveLength(3);
+
+    const fog = { ...state.fog, visited: new Set([...state.fog.visited, axialKey(doors[0])]) };
+    const after = buildScenePlan(buildRenderModel({ ...state, fog }));
+    expect(after.encounterDoors).toHaveLength(2);
+  });
+
+  it('守卫进入实体计划时带 defId，未激活时不泄露', () => {
+    const state = createGame(3);
+    const guardian = state.monsters.find((monster) => monster.def.id === 'guardian')!;
+
+    const dormant = buildRenderModel(state);
+    const hidden = dormant.monsters.find((monster) => monster.uid === guardian.uid)!;
+    expect(hidden.defId).toBe('guardian');
+    expect(hidden.visible).toBe(false);
+
+    const awake = buildRenderModel({
+      ...state,
+      player: { ...state.player, pos: guardian.pos },
+      monsters: state.monsters.map((monster) =>
+        monster.uid === guardian.uid
+          ? { ...monster, bossPhase: 1 as const, state: 'chase' as const }
+          : monster,
+      ),
+    });
+    const plan = buildScenePlan(awake);
+    const entity = plan.entities.find((item) => item.id === guardian.uid);
+    expect(entity?.defId).toBe('guardian');
+    expect(entity?.kind).toBe('chase');
   });
 
   it('提灯中心最亮、远处衰减到 0，记忆区恒暗于提灯区', () => {

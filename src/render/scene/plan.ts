@@ -7,6 +7,7 @@ import {
   type Point,
 } from '../../rules/grid/geometry';
 import type { MonsterIntent, MonsterState } from '../../rules/monsters/brain';
+import type { TerrainKind } from '../../rules/generation/generator';
 import type { RenderModel } from '../model';
 import type {
   PresentationFlash,
@@ -33,6 +34,8 @@ export const LANTERN_OUTER = LANTERN_RADIUS * 6.5;
 
 /** 地块种类：0 = 已踏足实地，1 = 只探听到的通路。 */
 export type FloorKind = 0 | 1;
+/** 特殊地形实例值：0 = 无，与 FloorInstance.kind 一样走数值属性。 */
+export type FloorTerrain = 0 | 1 | 2 | 3;
 
 export interface FloorInstance {
   /** 格心的逻辑坐标。 */
@@ -42,6 +45,8 @@ export interface FloorInstance {
   tone: number;
   /** 6 位掩码：第 dir 位为 1 表示该边邻格不是实地，需要画断崖/侧棱。 */
   cliffMask: number;
+  /** 特殊地形：0 无 / 1 乱石 / 2 水渍 / 3 风口。着色器据此换程序化纹理（§5.3）。 */
+  terrain: FloorTerrain;
 }
 
 export interface WallRidge {
@@ -58,6 +63,8 @@ export interface HighlightInstance {
 
 export interface EntityPlan {
   id: string;
+  /** 怪物原型 id：守卫要画得更大、重绘 key 也要认它。 */
+  defId: string;
   /** 脚锚的逻辑坐标（位移中取插值后的位置）。 */
   logical: Point;
   /** CPU 侧算好的提灯项，暗区不发光。 */
@@ -85,6 +92,8 @@ export interface ScenePlan {
   heardOutlines: { logical: Point; noisy: boolean }[];
   /** 出口格心，仅当出口已被踏足为实地时存在。 */
   exit: Point | null;
+  /** 未探明奇遇房的门：纯黑里唯一自发光的几何。 */
+  encounterDoors: Point[];
   entities: EntityPlan[];
   /** 演出帧直传的瞬时特效，进度已在 director 里算好。 */
   floaters: PresentationFloater[];
@@ -136,6 +145,16 @@ function cliffMaskOf(views: readonly string[]): number {
   return mask;
 }
 
+const TERRAIN_INDEX: Record<TerrainKind, FloorTerrain> = {
+  rubble: 1,
+  water: 2,
+  vent: 3,
+};
+
+function terrainIndex(kind: TerrainKind | null): FloorTerrain {
+  return kind === null ? 0 : TERRAIN_INDEX[kind];
+}
+
 export function buildScenePlan(model: RenderModel, frame?: PresentationFrame): ScenePlan {
   const playerLogical = frame?.player.pos ?? axialToPixel(model.player, BASE_HEX_SIZE);
 
@@ -151,13 +170,19 @@ export function buildScenePlan(model: RenderModel, frame?: PresentationFrame): S
     const logical = axialToPixel(axial, BASE_HEX_SIZE);
 
     if (appearance.kind === 'heardPassage') {
-      floors.push({ logical, kind: 1, tone: hash01(key), cliffMask: 0 });
+      floors.push({ logical, kind: 1, tone: hash01(key), cliffMask: 0, terrain: 0 });
       heardOutlines.push({ logical, noisy: appearance.result === 'passage_noisy' });
       continue;
     }
 
     // 已踏足实地
-    floors.push({ logical, kind: 0, tone: hash01(key), cliffMask: cliffMaskOf(cell.views) });
+    floors.push({
+      logical,
+      kind: 0,
+      tone: hash01(key),
+      cliffMask: cliffMaskOf(cell.views),
+      terrain: terrainIndex(cell.terrain),
+    });
 
     // 墙脊：贴在与墙格共享的边上，每条边只放一次
     for (let dir = 0 as DirIndex; dir < 6; dir = (dir + 1) as DirIndex) {
@@ -195,6 +220,7 @@ export function buildScenePlan(model: RenderModel, frame?: PresentationFrame): S
     highlights,
     heardOutlines,
     exit,
+    encounterDoors: model.encounterDoors.map((door) => axialToPixel(door, BASE_HEX_SIZE)),
     entities: buildEntities(model, frame, playerLogical),
     floaters: frame?.floaters ?? [],
     flashes: frame?.flashes ?? [],
@@ -211,6 +237,7 @@ function buildEntities(
 
   entities.push({
     id: 'player',
+    defId: 'player',
     logical: playerLogical,
     lantern: lanternAt(playerLogical, playerLogical),
     kind: 'player',
@@ -229,6 +256,7 @@ function buildEntities(
       const logical = axialToPixel(monster.pos, BASE_HEX_SIZE);
       entities.push({
         id: monster.uid,
+        defId: monster.defId,
         logical,
         lantern: lanternAt(logical, playerLogical),
         kind: monster.state,
@@ -248,6 +276,7 @@ function buildEntities(
     const info = model.monsters.find((item) => item.uid === monster.uid);
     entities.push({
       id: monster.uid,
+      defId: info?.defId ?? '',
       logical: monster.pos,
       lantern: lanternAt(monster.pos, playerLogical),
       kind: monster.state,

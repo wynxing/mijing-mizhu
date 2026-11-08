@@ -50,6 +50,8 @@ function intentGlyph(intent: MonsterIntent): { text: string; color: string } {
       return { text: `→${intent.steps}`, color: PALETTE.intentMove };
     case 'attack':
       return { text: `✕${intent.damage}`, color: PALETTE.intentAttack };
+    case 'aoe':
+      return { text: `◎${intent.damage}`, color: PALETTE.intentAttack };
     case 'search':
       return { text: '?', color: PALETTE.intentSearch };
     default:
@@ -59,7 +61,11 @@ function intentGlyph(intent: MonsterIntent): { text: string; color: string } {
 
 function intentKey(intent: MonsterIntent): string {
   const value =
-    intent.kind === 'move' ? intent.steps : intent.kind === 'attack' ? intent.damage : 0;
+    intent.kind === 'move'
+      ? intent.steps
+      : intent.kind === 'attack' || intent.kind === 'aoe'
+        ? intent.damage
+        : 0;
   return `${intent.kind}:${value}`;
 }
 
@@ -123,14 +129,19 @@ function drawEntity(ctx: CanvasRenderingContext2D, e: EntityPlan): void {
     ctx.strokeStyle = PALETTE.playerRing;
     ctx.stroke();
   } else {
+    const boss = e.defId === 'guardian';
     ctx.save();
     ctx.translate(cx, BODY_CY);
     ctx.rotate(Math.PI / 4);
-    const s = BODY_RADIUS * 0.85;
+    const s = BODY_RADIUS * (boss ? 1.15 : 0.85);
     ctx.fillStyle = stateColor(e.kind);
     ctx.fillRect(-s, -s, s * 2, s * 2);
-    ctx.lineWidth = e.targeted ? 6 : 2;
-    ctx.strokeStyle = e.targeted ? PALETTE.highlight : PALETTE.playerRing;
+    ctx.lineWidth = e.targeted ? 6 : boss ? 5 : 2;
+    ctx.strokeStyle = e.targeted
+      ? PALETTE.highlight
+      : boss
+        ? PALETTE.exitMark
+        : PALETTE.playerRing;
     ctx.strokeRect(-s, -s, s * 2, s * 2);
     ctx.restore();
   }
@@ -160,6 +171,7 @@ export class EntityLayer {
         this.rigs.set(e.id, rig);
       }
       const key = [
+        e.defId,
         e.kind,
         e.hp,
         e.maxHp,

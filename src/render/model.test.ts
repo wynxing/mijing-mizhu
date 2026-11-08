@@ -14,7 +14,8 @@ describe('渲染外观分类', () => {
     expect(unknown.appearance.kind).toBe('unknown');
     expect(unknown.standable).toBe(false);
     expect(unknown.wallEdges.every((edge) => !edge)).toBe(true);
-    expect('terrain' in unknown).toBe(false);
+    expect(unknown.terrain).toBeNull();
+    expect(unknown.roomKind).toBeNull();
   });
 
   it('已踏足格的墙边与真实地形逐方向一致', () => {

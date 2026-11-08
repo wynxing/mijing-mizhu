@@ -18,8 +18,8 @@ import { paletteColor, type FloorTextures } from './textures';
 /** 只有朝向观察者的西南(4)、东南(5)两条边露出断崖；其余边侧对或背对镜头，不建侧面。 */
 const CLIFF_SIDE_DIRS: readonly DirIndex[] = [4, 5];
 const CLIFF_DEPTH = BASE_HEX_SIZE * 0.28;
-/** 关卡固定 24×18=432 格，留足余量，免去动态扩容。 */
-const FLOOR_CAPACITY = 1024;
+/** 实例只来自已知格：46×30 关卡实测峰值 485，1024 留足余量，免去动态扩容。 */
+export const FLOOR_CAPACITY = 1024;
 
 /** 一个六棱柱：顶面 6 三角 + 朝向观察者的断崖侧壁，全部烘进局部坐标。 */
 function buildPrismGeometry(): BufferGeometry {
@@ -79,6 +79,7 @@ function buildPrismGeometry(): BufferGeometry {
   geo.setAttribute('aKind', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
   geo.setAttribute('aTone', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
   geo.setAttribute('aCliffMask', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
+  geo.setAttribute('aTerrain', new InstancedBufferAttribute(new Float32Array(FLOOR_CAPACITY), 1));
   return geo;
 }
 
@@ -118,6 +119,7 @@ export class FloorMesh {
     const kind = this.geometry.getAttribute('aKind') as InstancedBufferAttribute;
     const tone = this.geometry.getAttribute('aTone') as InstancedBufferAttribute;
     const mask = this.geometry.getAttribute('aCliffMask') as InstancedBufferAttribute;
+    const terrain = this.geometry.getAttribute('aTerrain') as InstancedBufferAttribute;
 
     const count = Math.min(plan.floors.length, FLOOR_CAPACITY);
     for (let i = 0; i < count; i += 1) {
@@ -129,6 +131,7 @@ export class FloorMesh {
       kind.setX(i, f.kind);
       tone.setX(i, f.tone);
       mask.setX(i, f.cliffMask);
+      terrain.setX(i, f.terrain);
     }
     this.mesh.count = count;
     this.mesh.instanceMatrix.needsUpdate = true;
@@ -136,6 +139,7 @@ export class FloorMesh {
     kind.needsUpdate = true;
     tone.needsUpdate = true;
     mask.needsUpdate = true;
+    terrain.needsUpdate = true;
   }
 
   setLantern(playerLogical: { x: number; y: number }): void {

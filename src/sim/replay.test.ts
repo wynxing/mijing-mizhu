@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { IntentStep } from '../core/intentTimeline';
 import type { GameIntent } from '../rules/turn/types';
-import { compareRuns, runScript, runWithLog } from './replay';
+import { compareRuns, compareTraces, runScript, runWithLog } from './replay';
 
 const SCRIPT: IntentStep<GameIntent>[] = [
   { step: 1, intent: { type: 'listen' } },
@@ -26,6 +26,14 @@ describe('回放确定性', () => {
     const a = runScript(41, SCRIPT);
     const b = runScript(41, other);
     expect(a.hashes).not.toEqual(b.hashes);
+  });
+
+  it('只改一个 intent 就必须在那一步分叉', () => {
+    const mutated = SCRIPT.map((step) => ({ ...step }));
+    mutated[1] = { step: 2, intent: { type: 'endTurn' } };
+    const report = compareTraces(runScript(41, SCRIPT), runScript(41, mutated));
+    expect(report.identical).toBe(false);
+    expect(report.firstDivergence).toBe(1);
   });
 
   it('运行会记录每一步的哈希', () => {

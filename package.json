@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "《迷雾迷径》回合制六边形网格迷宫探索 Roguelite · 阶段 1 可玩版本",
+  "description": "《迷雾迷径》回合制六边形网格迷宫探索 Roguelite · 阶段 2 可玩版本",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

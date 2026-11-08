@@ -1,16 +1,35 @@
 import { Rng32 } from '../../core/rng';
-import { areAdjacent, axialKey, hexDistance, neighbor, type Axial, type AxialKey } from '../grid/geometry';
-import { isWalkableAtLevel } from '../generation/generator';
+import {
+  DIRECTIONS,
+  areAdjacent,
+  axialKey,
+  hexDistance,
+  neighbor,
+  type Axial,
+  type AxialKey,
+} from '../grid/geometry';
+import { isWalkableAtLevel, type TerrainKind } from '../generation/generator';
 import { markVisited, mergeListenResults } from '../fog/fog';
 import { LISTEN_MOVEMENT_COST, LISTEN_PER_TURN, resolveListen } from '../fog/listen';
 import { addScent, clearScentAround, decayScent } from '../fog/scent';
 import { findDie, movementPoints, reserveDie, rollDice, unreserveDie } from '../dice/dice';
-import { actMonster, rollIntent, updatePerception, type Monster } from '../monsters/brain';
+import {
+  actMonster,
+  advanceBossPhase,
+  createMonster,
+  rollIntent,
+  updatePerception,
+  type Monster,
+} from '../monsters/brain';
+import { monsterDef } from '../monsters/content';
 import { expireAtTurnEnd, mergeBuff, sumBuff, tickBuffs, type Buff } from '../buffs/buffs';
 import { damageDealt, hitPlayer, playerAttack } from '../combat/combat';
 import { TRAP_DAMAGE, debuffDamage, resolveTrap } from '../traps/trap';
 import { cardDef, type CardDef } from '../cards/content';
 import { drawCard } from '../cards/drop';
+import { canAnswerEncounter, canInteract, roomIndexAt } from '../rooms/rooms';
+import { pickQuestion, settleAnswer, useHint } from '../encounter/encounter';
+import { sanitizeQuestions } from '../encounter/questions';
 import type { GameIntent, GameState, LogEntry } from './types';
 import type { GameEvent } from './events';
 import { createGame } from '../game/createGame';
@@ -51,8 +70,165 @@ function applyTrap(next: GameState, cell: Axial, events: GameEvent[]): GameState
   };
 }
 
-/** 蛛巢布陷阱：每回合最多新增 2 个，不覆盖已有陷阱、玩家脚下、起点与出口。 */
-function mergeLaidTraps(state: GameState, laid: readonly Axial[]): Set<AxialKey> | null {
+const TERRAIN_LOG: Record<TerrainKind, string> = {
+  rubble: '乱石堆把你的气味搅散了',
+  water: '水渍冲走了你的气味',
+  vent: '风口吹散了你留下的气味',
+};
+
+/** 特殊地形：踏上即把该格与相邻格气味归零，含本步刚留下的气味（§5.3）。 */
+function applyTerrain(next: GameState, cell: Axial): GameState {
+  const kind = next.level.terrain.get(axialKey(cell));
+  if (!kind) return next;
+  return {
+    ...next,
+    scent: clearScentAround(next.scent, cell),
+    log: pushLog(next.log, TERRAIN_LOG[kind], next.turn),
+  };
+}
+
+/** 战斗房：踏入任一格，房内怪物立即转追击并跳过预警（§8.1）。 */
+function triggerBattleRoom(next: GameState, cell: Axial): GameState {
+  const roomIndex = roomIndexAt(next.level, cell);
+  if (roomIndex < 0 || next.level.rooms[roomIndex].kind !== 'battle') return next;
+
+  let changed = false;
+  const monsters = next.monsters.map((monster) => {
+    if (roomIndexAt(next.level, monster.pos) !== roomIndex) return monster;
+    if (monster.state === 'chase' && !monster.spotted) return monster;
+    changed = true;
+    return {
+      ...monster,
+      state: 'chase' as const,
+      spotted: false,
+      lastKnown: next.player.pos,
+    };
+  });
+  if (!changed) return next;
+  return {
+    ...next,
+    monsters,
+    log: pushLog(next.log, '战斗房的怪物扑了上来', next.turn),
+  };
+}
+
+const CHEST_BUFF_CARDS = ['battlecry', 'stance', 'swift'] as const;
+export const REST_HEAL = 30;
+
+/**
+ * 结算脚下房间（§8.1）：宝箱 50% 抽卡 / 50% 临时 buff；休整回血并锁定 1 张手牌。
+ * 奖励只结算一次，状态写入 roomStates。
+ */
+function settleRoom(
+  state: GameState,
+  roomIndex: number,
+): { state: GameState; events: GameEvent[] } {
+  const kind = state.level.rooms[roomIndex].kind;
+  const events: GameEvent[] = [];
+
+  // 奇遇房：首次交互固定题目；房间在答题后才结算，所以这里不写 roomStates。
+  if (kind === 'encounter') {
+    if (state.encounter && state.encounter.roomIndex === roomIndex && !state.encounter.resolved) {
+      return { state: { ...state, notice: null }, events: [] };
+    }
+    const rng = new Rng32(state.rngState);
+    const picked = pickQuestion(state.questionBank, rng.state);
+    return {
+      state: {
+        ...state,
+        encounter: {
+          roomIndex,
+          question: picked.question,
+          hintUsed: false,
+          resolved: false,
+          correct: null,
+        },
+        rngState: picked.rngState,
+        notice: null,
+        log: pushLog(state.log, '石壁上浮现一道题', state.turn),
+      },
+      events: [],
+    };
+  }
+
+  let next: GameState = {
+    ...state,
+    roomStates: state.roomStates.map((room, index) =>
+      index === roomIndex ? { settled: true } : room,
+    ),
+    notice: null,
+  };
+
+  if (kind === 'rest') {
+    const hp = Math.min(state.player.maxHp, state.player.hp + REST_HEAL);
+    const healed = hp - state.player.hp;
+    if (healed > 0) events.push({ type: 'playerHealed', amount: healed });
+    next = {
+      ...next,
+      player: { ...next.player, hp },
+      log: pushLog(next.log, `你在休整房回复 ${healed} 点体力`, next.turn),
+    };
+    if (next.hand.length === 0) return { state: next, events };
+    const rng = new Rng32(next.rngState);
+    const locked = next.hand[rng.int(0, next.hand.length - 1)];
+    return {
+      state: {
+        ...next,
+        restLockUid: locked.uid,
+        rngState: rng.state,
+        log: pushLog(next.log, `你收好了「${locked.def.name}」，它不会被扣走`, next.turn),
+      },
+      events,
+    };
+  }
+
+  // 宝箱：先掷分支，抽卡再单独消耗一次随机数（drop 自带 uid 盐）。
+  const rng = new Rng32(next.rngState);
+  if (rng.next() < 0.5) {
+    const drop = drawCard(next.hand, rng.state, next.turn);
+    if (drop) {
+      return {
+        state: {
+          ...next,
+          hand: [...next.hand, drop.card],
+          rngState: drop.rngState,
+          log: pushLog(next.log, `宝箱里是「${drop.card.def.name}」`, next.turn),
+        },
+        events,
+      };
+    }
+    return {
+      state: {
+        ...next,
+        rngState: rng.state,
+        log: pushLog(next.log, '宝箱已经空了', next.turn),
+      },
+      events,
+    };
+  }
+
+  const card = cardDef(CHEST_BUFF_CARDS[rng.int(0, CHEST_BUFF_CARDS.length - 1)]);
+  if (card.effect.kind !== 'buff') return { state: next, events };
+  const buff: Buff = {
+    id: card.id,
+    kind: card.effect.buff,
+    name: card.name,
+    turns: card.effect.turns,
+    amount: card.effect.amount,
+  };
+  events.push({ type: 'playerBuffed', name: card.name });
+  return {
+    state: {
+      ...next,
+      buffs: mergeBuff(next.buffs, buff),
+      rngState: rng.state,
+      log: pushLog(next.log, `宝箱里是「${card.name}」`, next.turn),
+    },
+    events,
+  };
+}
+
+/** 蛛巢布陷阱：每回合最多新增 2 个，不覆盖已有陷阱、玩家脚下、起点与出口。 */function mergeLaidTraps(state: GameState, laid: readonly Axial[]): Set<AxialKey> | null {
   const traps = new Set(state.level.traps);
   const limit = traps.size + 2;
   for (const cell of laid) {
@@ -114,9 +290,13 @@ export function listenLimit(state: GameState): number {
   return LISTEN_PER_TURN + state.listenBonus;
 }
 
-/** 还有没有可执行的动作：能动、能探听、能出牌，或能取消预留。 */
+/** 还有没有可执行的动作：能动、能探听、能出牌、能取消预留，或能结算脚下房间。 */
 export function hasLegalAction(state: GameState): boolean {
   if (state.status !== 'playing') return false;
+  // 房间交互不花移动点，必须算作合法动作，否则自动结束回合会抢走交互机会。
+  if (canInteract(state).ok) return true;
+  // 答题途中同样算合法动作，不能被自动结束回合打断（§8.2）。
+  if (canAnswerEncounter(state).ok) return true;
   if (movementPointsOf(state) >= 1) return true;
   if (state.dice.some((die) => die.reserved)) return true;
   return state.hand.some((card) =>
@@ -127,6 +307,11 @@ export function hasLegalAction(state: GameState): boolean {
 function monsterAt(state: GameState, cell: Axial): Monster | undefined {
   const key = axialKey(cell);
   return state.monsters.find((monster) => axialKey(monster.pos) === key);
+}
+
+/** 守卫还活着时出口不开放（§6.4 胜利门）。 */
+export function hasGuardian(state: Pick<GameState, 'monsters'>): boolean {
+  return state.monsters.some((monster) => monster.def.id === 'guardian');
 }
 
 /** 是否在同一条直线上（投石这类远程直线卡）。 */
@@ -379,11 +564,16 @@ function damageBonus(buffs: readonly Buff[]): number {
 
 function applyDamageToMonster(state: GameState, monster: Monster, amount: number): GameState {
   const hp = monster.hp - amount;
+  // 被攻击也会唤醒守卫（§6.4 激活条件）。
+  const awake = (item: Monster): Monster =>
+    item.def.id === 'guardian' && item.bossPhase === 0
+      ? { ...item, bossPhase: 1, state: 'chase', lastKnown: state.player.pos, spotted: false }
+      : item;
   if (hp > 0) {
     return {
       ...state,
       monsters: state.monsters.map((item) =>
-        axialKey(item.pos) === axialKey(monster.pos) ? { ...item, hp } : item,
+        axialKey(item.pos) === axialKey(monster.pos) ? awake({ ...item, hp }) : item,
       ),
     };
   }
@@ -429,6 +619,56 @@ function endTurn(state: GameState): { state: GameState; events: GameEvent[] } {
   const events: GameEvent[] = [];
   const laidTraps: Axial[] = [];
 
+  // 守卫阶段推进与阶段 2 的一次性召唤（§6.4），与怪物结算共用同一条 Rng32。
+  const summons: Monster[] = [];
+  const summonKeys = new Set(state.monsters.map((monster) => axialKey(monster.pos)));
+  monsters = monsters.map((monster) => {
+    const advanced = advanceBossPhase(monster);
+    if (advanced.bossPhase === monster.bossPhase) return advanced;
+    events.push({
+      type: 'bossPhase',
+      monsterUid: monster.uid,
+      monsterName: monster.def.name,
+      phase: advanced.bossPhase,
+    });
+    if (advanced.bossPhase !== 2 || monster.summoned) return advanced;
+
+    let count = 0;
+    const cells: Axial[] = [];
+    while (count < 2) {
+      const options = DIRECTIONS.map((delta) => ({
+        q: advanced.pos.q + delta.q,
+        r: advanced.pos.r + delta.r,
+      })).filter(
+        (cell) =>
+          isWalkableAtLevel(state.level, cell) &&
+          !summonKeys.has(axialKey(cell)) &&
+          axialKey(cell) !== axialKey(state.player.pos),
+      );
+      if (options.length === 0) break;
+      const cell = options[rng.int(0, options.length - 1)];
+      summonKeys.add(axialKey(cell));
+      cells.push(cell);
+      count++;
+    }
+    for (const [index, cell] of cells.entries()) {
+      const summon = createMonster(
+        monsterDef('sniffer'),
+        cell,
+        `${monster.uid}-summon-${state.turn}-${index}`,
+      );
+      summons.push(summon);
+      events.push({
+        type: 'monsterSummoned',
+        monsterUid: summon.uid,
+        monsterName: summon.def.name,
+        at: cell,
+      });
+    }
+    return { ...advanced, summoned: true };
+  });
+  monsters = [...monsters, ...summons];
+
   for (const monster of monsters) {
     const before = monster.pos;
     const action = actMonster(monster, map, state.player.pos, rng);
@@ -445,14 +685,24 @@ function endTurn(state: GameState): { state: GameState; events: GameEvent[] } {
     if (action.damage > 0) {
       const hit = hitPlayer(action.damage, state.buffs);
       hp -= hit.damage;
-      events.push({
-        type: 'monsterAttacked',
-        monsterUid: monster.uid,
-        monsterName: monster.def.name,
-        target: state.player.pos,
-        damage: hit.damage,
-        avoided: hit.dodged || hit.immune,
-      });
+      if (monster.intent.kind === 'aoe') {
+        // AOE 只发一个事件：表现层据此同时播放闪光/震屏与伤害数字，避免重复飘字。
+        events.push({
+          type: 'bossAoE',
+          at: state.player.pos,
+          radius: monster.intent.radius,
+          damage: hit.damage,
+        });
+      } else {
+        events.push({
+          type: 'monsterAttacked',
+          monsterUid: monster.uid,
+          monsterName: monster.def.name,
+          target: state.player.pos,
+          damage: hit.damage,
+          avoided: hit.dodged || hit.immune,
+        });
+      }
       log = pushLog(
         log,
         hit.damage === 0
@@ -460,16 +710,29 @@ function endTurn(state: GameState): { state: GameState; events: GameEvent[] } {
           : `${monster.def.name} 造成 ${hit.damage} 点伤害`,
         state.turn,
       );
+    } else if (monster.intent.kind === 'aoe') {
+      // 走出半径：仍要演出爆发，只是没打中。
+      events.push({
+        type: 'bossAoE',
+        at: state.player.pos,
+        radius: monster.intent.radius,
+        damage: 0,
+      });
     }
   }
 
   const stationaryTurns = state.movedThisTurn ? 0 : state.stationaryTurns + 1;
+  const playerInExitRoom = (() => {
+    const index = roomIndexAt(state.level, state.player.pos);
+    return index >= 0 && state.level.rooms[index].kind === 'exit';
+  })();
   monsters = monsters.map((monster) => {
     const perceived = updatePerception(
       monster,
       state.scent,
       state.player.pos,
       stationaryTurns,
+      playerInExitRoom,
     );
     // 定身只封锁本回合：感知早退后在此解除，再预掷下一回合意图。
     const thawed = perceived.frozen ? { ...perceived, frozen: false } : perceived;
@@ -558,7 +821,7 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
         next = {
           ...struck,
           spentPoints: state.spentPoints + 1,
-          status: reachedExit && !survived ? 'won' : state.status,
+          status: reachedExit && !survived && !hasGuardian(struck) ? 'won' : state.status,
           log: pushLog(
             state.log,
             survived
@@ -583,11 +846,17 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
             scent: addScent(next.scent, [target]),
             movedThisTurn: true,
             log: reachedExit
-              ? pushLog(next.log, '你找到了出口', next.turn)
+              ? pushLog(
+                  next.log,
+                  hasGuardian(next) ? '守卫还挡在出口前' : '你找到了出口',
+                  next.turn,
+                )
               : next.log,
           };
           next = grantCardDrop(next);
+          next = applyTerrain(next, target);
           next = applyTrap(next, target, events);
+          next = triggerBattleRoom(next, target);
         }
         break;
       }
@@ -600,15 +869,58 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
         scent: addScent(state.scent, [target]),
         spentPoints: state.spentPoints + 1,
         movedThisTurn: true,
-        status: reachedExit ? 'won' : state.status,
+        status: reachedExit && !hasGuardian(state) ? 'won' : state.status,
         log: pushLog(
           state.log,
-          reachedExit ? '你找到了出口' : `你移动到 (${target.q},${target.r})`,
+          reachedExit
+            ? hasGuardian(state)
+              ? '守卫还挡在出口前'
+              : '你找到了出口'
+            : `你移动到 (${target.q},${target.r})`,
           state.turn,
         ),
         notice: null,
       };
+      next = applyTerrain(next, target);
       next = applyTrap(next, target, events);
+      next = triggerBattleRoom(next, target);
+      break;
+    }
+
+    case 'interact': {
+      const check = canInteract(state);
+      if (!check.ok) return reject(state, check.reason as string);
+      const settled = settleRoom(state, check.roomIndex);
+      next = settled.state;
+      events = settled.events;
+      break;
+    }
+
+    case 'setQuestionBank': {
+      const sanitized = sanitizeQuestions(intent.questions);
+      if (sanitized.length === 0) return reject(state, '题库里没有合法题目');
+      next = { ...state, questionBank: sanitized, notice: null };
+      break;
+    }
+
+    case 'answerQuestion': {
+      const check = canAnswerEncounter(state);
+      if (!check.ok) return reject(state, check.reason as string);
+      const result = settleAnswer(state, intent.choice);
+      next = result.state;
+      events = result.events;
+      for (const line of result.log) next = { ...next, log: pushLog(next.log, line, next.turn) };
+      break;
+    }
+
+    case 'useHint': {
+      const check = canAnswerEncounter(state);
+      if (!check.ok) return reject(state, check.reason as string);
+      if (state.encounter?.hintUsed) return reject(state, '这道题已经用过提示');
+      const result = useHint(state, intent.cardUid);
+      if (!result) return reject(state, '没有这张卡');
+      next = result.state;
+      for (const line of result.log) next = { ...next, log: pushLog(next.log, line, next.turn) };
       break;
     }
 
@@ -678,6 +990,15 @@ export function reduceGame(state: GameState, intent: GameIntent): GameState {
     default: {
       return state;
     }
+  }
+
+  // 守卫倒下时玩家正站在出口上：立即判胜（§6.4 胜利门）。
+  if (
+    next.status === 'playing' &&
+    !hasGuardian(next) &&
+    axialKey(next.player.pos) === axialKey(next.level.exit)
+  ) {
+    next = { ...next, status: 'won', log: pushLog(next.log, '你找到了出口', next.turn) };
   }
 
   // 真正无路可走时自动结束回合；存在预留骰子时不触发，取消预留始终可用。

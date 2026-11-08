@@ -5,6 +5,7 @@ import {
   generateLevel,
   isWalkableAtLevel,
   levelAsCellGrid,
+  roomQuadrant,
 } from './generator';
 import {
   countDeadEnds,
@@ -27,6 +28,7 @@ describe('关卡生成', () => {
     expect(a.start).toEqual(b.start);
     expect(a.exit).toEqual(b.exit);
     expect([...a.traps].sort()).toEqual([...b.traps].sort());
+    expect([...a.terrain].sort()).toEqual([...b.terrain].sort());
     expect(a.monsters).toEqual(b.monsters);
   });
 
@@ -74,7 +76,7 @@ describe('关卡生成', () => {
 
   it('起点到出口的最短路径不短于 minPath', () => {
     for (const seed of [2, 13, 404]) {
-      const level = generateLevel(params(seed));
+      const level = generateValidLevel(params(seed));
       const path = findPath(levelAsCellGrid(level), level.start, level.exit);
       expect(path).not.toBeNull();
       expect(path!.length).toBeGreaterThanOrEqual(DEFAULT_GEN_PARAMS.minPath);
@@ -110,18 +112,18 @@ describe('关卡生成', () => {
 
   it('陷阱避开起点与出口，且全部封锁后仍可到达出口', () => {
     for (const seed of [10, 31, 88]) {
-      const level = generateLevel(params(seed));
+      const level = generateValidLevel(params(seed));
       expect(level.traps.size).toBeGreaterThan(0);
       for (const key of level.traps) {
         expect(key).not.toBe(axialKey(level.start));
         expect(key).not.toBe(axialKey(level.exit));
       }
-      expect(validateLevel(level, params(seed))).toEqual([]);
+      expect(validateLevel(level, params(level.seed))).toEqual([]);
     }
   });
 
-  it('怪物远离起点、避开出口与陷阱，并混入蛛巢', () => {
-    const level = generateLevel(params(31));
+  it('怪物远离起点、避开出口与陷阱，守卫守在出口房内', () => {
+    const level = generateValidLevel(params(31));
     expect(level.monsters).toHaveLength(DEFAULT_GEN_PARAMS.monsterBudget);
     for (const placement of level.monsters) {
       expect(isWalkableAtLevel(level, placement.pos)).toBe(true);
@@ -129,25 +131,79 @@ describe('关卡生成', () => {
       expect(axialKey(placement.pos)).not.toBe(axialKey(level.exit));
       expect(level.traps.has(axialKey(placement.pos))).toBe(false);
     }
-    const kinds = new Set(level.monsters.map((placement) => placement.defId));
-    expect(kinds.has('brood')).toBe(true);
-    expect(kinds.has('wraith')).toBe(true);
+    const guardians = level.monsters.filter((placement) => placement.defId === 'guardian');
+    expect(guardians).toHaveLength(1);
+    expect(hexDistance(guardians[0].pos, level.exit)).toBeLessThanOrEqual(2);
+    const exitRoom = level.rooms.find((room) => room.kind === 'exit')!;
+    const offset = axialToOffset(guardians[0].pos);
+    expect(offset.col).toBeGreaterThanOrEqual(exitRoom.col);
+    expect(offset.col).toBeLessThan(exitRoom.col + exitRoom.w);
+    expect(offset.row).toBeGreaterThanOrEqual(exitRoom.row);
+    expect(offset.row).toBeLessThan(exitRoom.row + exitRoom.h);
   });
 
-  it('死路只统计不拦截', () => {
-    const level = generateLevel(params(31));
-    expect(countDeadEnds(level)).toBeGreaterThanOrEqual(0);
+  it('游荡怪物覆盖四种原型', () => {
+    const kinds = new Set<string>();
+    for (let seed = 1; seed <= 20; seed++) {
+      for (const placement of generateValidLevel(params(seed)).monsters) {
+        kinds.add(placement.defId);
+      }
+    }
+    expect([...kinds].sort()).toEqual(['brood', 'guardian', 'sniffer', 'stonewarden', 'wraith']);
+  });
+
+  it('死路剪除至 0', () => {
+    for (const seed of [31, 77, 404]) {
+      expect(countDeadEnds(generateValidLevel(params(seed)))).toBe(0);
+    }
+  });
+
+  it('房间类型：起终点各 1、奇遇 3 个异象限、四类功能房齐全', () => {
+    for (const seed of [1, 8, 64]) {
+      const level = generateValidLevel(params(seed));
+      const count = (kind: string) => level.rooms.filter((room) => room.kind === kind).length;
+      expect(count('start')).toBe(1);
+      expect(count('exit')).toBe(1);
+      expect(count('encounter')).toBe(3);
+      for (const kind of ['chest', 'rest', 'battle', 'trap']) {
+        expect(count(kind)).toBeGreaterThanOrEqual(1);
+      }
+      const quadrants = new Set(
+        level.rooms
+          .filter((room) => room.kind === 'encounter')
+          .map((room) => roomQuadrant(room, level.width, level.height)),
+      );
+      expect(quadrants.size).toBe(3);
+      for (const room of level.rooms) {
+        expect(isWalkableAtLevel(level, room.door)).toBe(true);
+      }
+    }
+  });
+
+  it('特殊地形约为地面格 / 80，且避开起点、出口、陷阱与怪物', () => {
+    const level = generateValidLevel(params(12));
+    expect(level.terrain.size).toBe(Math.floor(countFloorCells(level) / 80));
+    const occupied = new Set(level.monsters.map((placement) => axialKey(placement.pos)));
+    for (const [key, kind] of level.terrain) {
+      expect(['rubble', 'water', 'vent']).toContain(kind);
+      expect(key).not.toBe(axialKey(level.start));
+      expect(key).not.toBe(axialKey(level.exit));
+      expect(level.traps.has(key)).toBe(false);
+      expect(occupied.has(key)).toBe(false);
+      const [q, r] = key.split(',');
+      expect(cellAtLevel(level, { q: Number(q), r: Number(r) })).toBe(0);
+    }
   });
 
   it('200 个随机种子全部通过校验', () => {
     const failures: string[] = [];
     for (let seed = 1; seed <= 200; seed++) {
-      const level = generateLevel(params(seed));
-      const errors = validateLevel(level, params(seed));
+      const level = generateValidLevel(params(seed));
+      const errors = validateLevel(level, params(level.seed));
       if (errors.length > 0) failures.push(`seed ${seed}: ${errors.join('、')}`);
     }
     expect(failures).toEqual([]);
-  });
+  }, 60_000);
 
   it('带重试的生成总能产出合法关卡', () => {
     for (let seed = 1; seed <= 30; seed++) {

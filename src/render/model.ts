@@ -10,11 +10,12 @@ import {
   type DirIndex,
 } from '../rules/grid/geometry';
 import { CELL_FLOOR } from '../rules/grid/path';
-import { cellAtLevel } from '../rules/generation/generator';
+import { cellAtLevel, type RoomKind, type TerrainKind } from '../rules/generation/generator';
+import { roomAt } from '../rules/rooms/rooms';
 import { isVisible, knownResult } from '../rules/fog/fog';
 import type { ListenResult } from '../rules/fog/fog';
 import type { GameState, GameStatus } from '../rules/turn/types';
-import type { MonsterIntent, MonsterState } from '../rules/monsters/brain';
+import type { Monster, MonsterIntent, MonsterState } from '../rules/monsters/brain';
 
 /** 警觉与追击的怪物在这个距离内会被察觉。 */
 export const MONSTER_SIGHT = 6;
@@ -40,6 +41,10 @@ export interface RenderCell {
   wallEdges: boolean[];
   /** 六条边外的邻居观感，索引与 DIRECTIONS 同序；只有地板格有值。 */
   views: NeighborView[];
+  /** 特殊地形（§5.3）；只有踏足过的格子才暴露。 */
+  terrain: TerrainKind | null;
+  /** 所在房间的类型；只有踏足过的格子才暴露。 */
+  roomKind: RoomKind | null;
 }
 
 export interface StandableNeighbor {
@@ -49,6 +54,7 @@ export interface StandableNeighbor {
 
 export interface RenderMonster {
   uid: string;
+  defId: string;
   pos: Axial;
   hp: number;
   maxHp: number;
@@ -77,6 +83,23 @@ export interface RenderModel {
   monsters: RenderMonster[];
   /** 处于警觉或追击的怪物数量（眼睛徽章）。 */
   alertedCount: number;
+  /** 还没探明的奇遇房门：在纯黑迷雾里自发冷光（§8.1 可发现性补丁）。 */
+  encounterDoors: Axial[];
+}
+
+/**
+ * 怪物可见性：踏足格上的看得见；警觉/追击的在一定距离内也能被察觉。
+ * 表现层与 HUD（守卫血条）共用这一条判定，避免各写一份。
+ */
+export function monsterVisible(
+  state: Pick<GameState, 'fog' | 'player' | 'monsters'>,
+  monster: Pick<Monster, 'pos' | 'state'>,
+): boolean {
+  return (
+    isVisible(state.fog, monster.pos) ||
+    ((monster.state === 'alert' || monster.state === 'chase') &&
+      hexDistance(state.player.pos, monster.pos) <= MONSTER_SIGHT)
+  );
 }
 
 function noWalls(): boolean[] {
@@ -110,6 +133,8 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
           standable: true,
           wallEdges,
           views: noViews(),
+          terrain: level.terrain.get(key) ?? null,
+          roomKind: roomAt(level, cell)?.kind ?? null,
         });
         continue;
       }
@@ -121,6 +146,8 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
           standable: false,
           wallEdges: noWalls(),
           views: noViews(),
+          terrain: null,
+          roomKind: null,
         });
         continue;
       }
@@ -130,6 +157,8 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
           standable: true,
           wallEdges: noWalls(),
           views: noViews(),
+          terrain: null,
+          roomKind: null,
         });
         continue;
       }
@@ -139,6 +168,8 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
         standable: false,
         wallEdges: noWalls(),
         views: noViews(),
+        terrain: null,
+        roomKind: null,
       });
     }
   }
@@ -166,17 +197,14 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
 
   const monsters: RenderMonster[] = state.monsters.map((monster) => ({
     uid: monster.uid,
+    defId: monster.def.id,
     pos: monster.pos,
     hp: monster.hp,
     maxHp: monster.maxHp,
     state: monster.state,
     intent: monster.intent,
     name: monster.def.name,
-    // 踩过的格子上的怪物一定看得见；正在追你的怪物在一定距离内也能被察觉
-    visible:
-      isVisible(state.fog, monster.pos) ||
-      ((monster.state === 'alert' || monster.state === 'chase') &&
-        hexDistance(state.player.pos, monster.pos) <= MONSTER_SIGHT),
+    visible: monsterVisible(state, monster),
     targeted: targetedKey === axialKey(monster.pos),
     spotted: monster.spotted,
   }));
@@ -194,5 +222,9 @@ export function buildRenderModel(state: GameState, targetedKey?: AxialKey): Rend
     alertedCount: state.monsters.filter(
       (monster) => monster.state === 'alert' || monster.state === 'chase',
     ).length,
+    // 门发光是「这里有个还没探索过的奇遇房」的唯一线索，探明后熄灭。
+    encounterDoors: level.rooms
+      .filter((room) => room.kind === 'encounter' && !isVisible(state.fog, room.door))
+      .map((room) => room.door),
   };
 }
